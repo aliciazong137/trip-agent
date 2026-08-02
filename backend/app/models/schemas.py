@@ -268,3 +268,48 @@ class SessionResponse(BaseModel):
     itinerary: Optional[Itinerary] = None
     session_state: Optional[SessionState] = None
     updated_at: str
+
+
+# ─── 第一期：自然语言入口 Schema ────────────────────────────────────────────────
+
+class NlTripPlanRequest(BaseModel):
+    """自然语言规划请求"""
+    query: str = Field(..., min_length=2, max_length=2000, description="用户自然语言 query")
+    session_id: Optional[str] = Field(default=None, description="会话 ID（澄清续接时携带）")
+
+
+class IntentResult(BaseModel):
+    """意图识别结构化输出（LLM 抽取结果）
+
+    注意：trip_meta 这里允许部分填充（缺 city/days 是常态），
+    所以不能用 TripMeta（必填 city 和 days）。用 dict 接收，
+    由 field_validator 做确定性校验。
+    """
+    intent: Literal["trip_planning", "unsupported"] = Field(default="trip_planning")
+    trip_meta: Optional[dict] = None
+    missing_fields: List[str] = Field(default=[])
+    invalid_fields: List[str] = Field(default=[])
+    assumptions: List[str] = Field(default=[])
+
+
+class RetrievedSource(BaseModel):
+    """RAG 检索来源（第二期用，第一期留空）"""
+    title: str
+    score: float
+    source: str
+
+
+class NlTripPlanResponse(BaseModel):
+    """自然语言规划响应"""
+    status: Literal["ok", "needs_clarification", "failed"]
+    session_id: Optional[str] = None
+    trip_meta: Optional[TripMeta] = None
+    trip_plan: Optional[TripPlan] = None
+    clarification_question: Optional[str] = None
+    missing_fields: List[str] = Field(default=[])
+    invalid_fields: List[str] = Field(default=[])
+    assumptions: List[str] = Field(default=[])
+    sources: List[RetrievedSource] = Field(default=[])
+    warnings: List[str] = Field(default=[])
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
