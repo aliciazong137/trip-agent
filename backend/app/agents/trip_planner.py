@@ -100,7 +100,10 @@ class TripPlannerAgent:
         self.attraction_agent = SimpleAgent(
             name="AttractionSearchAgent",
             llm=self.llm,
-            system_prompt=ATTRACTION_AGENT_PROMPT,
+            # 兜底 prompt（含占位符的模板在 plan_trip 时按 trip_meta 实参 format 注入）
+            system_prompt=ATTRACTION_AGENT_PROMPT.format(
+                days=3, min_pois=4, max_pois=8, max_tool_calls=11
+            ),
             tool_registry=attraction_registry,
             enable_tool_calling=True,
         )
@@ -155,10 +158,27 @@ class TripPlannerAgent:
         days = trip_meta.get("days", 3)
         preferences = trip_meta.get("preferences", "景点")
         accommodation = trip_meta.get("accommodation", "经济型")
+        must_visit = trip_meta.get("must_visit", [])
 
         # 2. 串行调 3 个研究 Agent（第十三章原版做法，MCP server 单进程串行处理）
+        # POI 数量按天数动态调整（第零期续作：原硬编码"最多 3 个"导致 2 天行程 POI 不足）
+        min_pois = max(days * 2, 4)        # 至少 4 个；2 天至少 4 个候选
+        max_pois = min(days * 3, 8)        # 最多 8 个，控制 MCP 调用耗时
+        # 工具调用上限：must_visit 数 + 1 次偏好 + max_pois 次详情 + 2 次门票
+        max_tool_calls = len(must_visit) + 1 + max_pois + 2
+
+        # 景点 Agent 的 prompt 按本次 trip_meta 动态注入数量参数（第零期续作新增）
+        self.attraction_agent.system_prompt = ATTRACTION_AGENT_PROMPT.format(
+            days=days,
+            min_pois=min_pois,
+            max_pois=max_pois,
+            max_tool_calls=max_tool_calls,
+        )
+
+        must_visit_hint = f"用户必去景点：{must_visit}" if must_visit else "用户未指定必去景点"
         attraction_query = (
-            f"请使用 amap_maps_text_search 工具搜索 {city} 的 {preferences} 相关景点。\n"
+            f"请搜索 {city} 的景点。{must_visit_hint}，偏好：{preferences}。"
+            f"至少 {min_pois} 个、最多 {max_pois} 个 POI。\n"
             f"[TOOL_CALL:amap_maps_text_search:keywords={preferences},city={city}]"
         )
         attraction_response = await asyncio.to_thread(self.attraction_agent.run, attraction_query)

@@ -652,3 +652,59 @@ class TestPrefetchParsing:
         ]
         assert len(all_ids) == len(set(all_ids)), \
             f"POI 跨天重复: {all_ids}"
+
+
+class TestEmptyDayWarning:
+    """第零期续作：空天产出显式 warning"""
+
+    @pytest.mark.asyncio
+    async def test_empty_day_produces_warning(self):
+        """2 天但只 1 个 POI → Day2 空 → warning"""
+        pois = [base_poi({"id": "p1", "priority": "must",
+                          "estimated_duration_minutes": 240})]
+        result = await build_itinerary_from_data(
+            SESSION_ID, {"city": "北京", "days": 2, "pace": "normal"},
+            {"city": "北京", "pois": pois},
+        )
+        assert any("未安排任何 POI" in w for w in result["warnings"]), \
+            f"空天应产 warning，实际: {result['warnings']}"
+
+    @pytest.mark.asyncio
+    async def test_empty_day_warning_includes_diagnostic(self):
+        """warning 应包含诊断信息：当前 POI 数、建议数"""
+        pois = [base_poi({"id": "p1", "priority": "must",
+                          "estimated_duration_minutes": 240})]
+        result = await build_itinerary_from_data(
+            SESSION_ID, {"city": "北京", "days": 2, "pace": "normal"},
+            {"city": "北京", "pois": pois},
+        )
+        ws = result["warnings"]
+        empty_warning = next(w for w in ws if "未安排任何 POI" in w)
+        assert "当前 1 个" in empty_warning, "应提示当前 POI 数"
+        assert "建议至少 4 个" in empty_warning, "应提示建议数（2天*2）"
+
+    @pytest.mark.asyncio
+    async def test_full_days_no_empty_warning(self):
+        """POI 足够填满天数时不误报告警"""
+        pois = [
+            base_poi({"id": f"p{i}", "priority": "must",
+                      "estimated_duration_minutes": 240})
+            for i in range(4)
+        ]
+        result = await build_itinerary_from_data(
+            SESSION_ID, {"city": "北京", "days": 2, "pace": "normal"},
+            {"city": "北京", "pois": pois},
+        )
+        assert not any("未安排任何 POI" in w for w in result["warnings"]), \
+            f"填满时不应告警，实际: {result['warnings']}"
+
+    @pytest.mark.asyncio
+    async def test_single_day_no_empty_warning(self):
+        """1 天行程即使空也不该告警（空天只在多天时才有意义）"""
+        result = await build_itinerary_from_data(
+            SESSION_ID, {"city": "北京", "days": 1, "pace": "normal"},
+            {"city": "北京", "pois": []},
+        )
+        # 1 天 0 POI 时 Day1 空，也应提示
+        # （单天空也有诊断价值，不应跳过）
+        assert any("未安排任何 POI" in w for w in result["warnings"])

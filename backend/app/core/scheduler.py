@@ -327,6 +327,20 @@ async def build_itinerary_from_data(
     for m in remaining_must:
         warnings.append(f"必去项 {m.get('id')} 因天数或 pace 上限未排入")
 
+    # 空天告警（第零期续作新增）
+    # 2 天行程只排出 1 天内容时，Day2 是空的 [{"day":2,"time_blocks":[]}]，
+    # 原实现静默产出空天，用户不知道是 POI 不足还是排程问题。
+    empty_days = [d["day"] for d in days if not d.get("time_blocks")]
+    if empty_days:
+        pois_count = len(pois_raw)
+        recommended = trip_meta.get("days", 0) * 2
+        warnings.append(
+            f"Day {','.join(map(str, empty_days))} 未安排任何 POI。"
+            f"原因可能是：候选 POI 数量不足（当前 {pois_count} 个，建议至少 {recommended} 个），"
+            f"或所有 must POI 已在第 1 天排完且剩余 POI 耗时超出 pace 上限。"
+            f"建议：增加 preferences 细化偏好，或在 must_visit 中补充更多景点。"
+        )
+
     # 预算检查
     total_cost = sum(d["estimated_total_cost"] for d in days)
     budget = trip_meta.get("budget")
