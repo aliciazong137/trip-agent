@@ -65,7 +65,10 @@ class BuildItineraryTool(Tool):
         if not poi_list:
             return "错误：poi-list 缺失"
 
-        result = await build_itinerary_from_data(session_id, trip_meta, poi_list)
+        # 第零期：读取预取的移动时间矩阵；缺失时排程内部用经纬度兜底
+        travel_matrix = await session_store.load_travel_matrix(session_id)
+
+        result = await build_itinerary_from_data(session_id, trip_meta, poi_list, travel_matrix)
         await session_store.save_itinerary(session_id, result["itinerary"])
         await session_store.update_session_phase(session_id, "planned")
 

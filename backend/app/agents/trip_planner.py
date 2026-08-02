@@ -178,9 +178,18 @@ class TripPlannerAgent:
         if pois:
             await session_store.save_poi_list(session_id, {"city": city, "pois": pois})
 
-            # 确定性排程
+            # 3.1 预取 POI 两两移动时间（第零期新增，网络 I/O 只在此阶段）
+            #     调用次数 N-1，失败或缺 location 时由排程内部经纬度兜底
+            from app.services.travel_matrix import prefetch_travel_matrix
+            travel_matrix = await prefetch_travel_matrix(pois, self.amap_tool)
+            if travel_matrix:
+                await session_store.save_travel_matrix(session_id, travel_matrix)
+
+            # 3.2 确定性排程（读矩阵，不发网络请求）
             from app.core.scheduler import build_itinerary_from_data
-            schedule_result = await build_itinerary_from_data(session_id, trip_meta, {"city": city, "pois": pois})
+            schedule_result = await build_itinerary_from_data(
+                session_id, trip_meta, {"city": city, "pois": pois}, travel_matrix
+            )
             await session_store.save_itinerary(session_id, schedule_result["itinerary"])
             await session_store.update_session_phase(session_id, "planned")
             itinerary = schedule_result["itinerary"]

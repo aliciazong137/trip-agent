@@ -223,6 +223,35 @@ async def load_itinerary(session_id: str) -> Optional[dict]:
         return None
 
 
+async def save_travel_matrix(
+    session_id: str, travel_matrix: dict, signal: Optional[asyncio.Event] = None
+) -> None:
+    """
+    保存预取的 POI 级移动时间矩阵（第零期新增）
+
+    格式：{"poi_a::poi_b": minutes, ...}（双向都存）
+    来源：高德 maps_distance，在研究阶段预取，供确定性排程读取
+    """
+    assert_valid_session_id(session_id)
+    await _atomic_write(
+        _session_dir(session_id) / "travel-matrix.json",
+        json.dumps(travel_matrix, ensure_ascii=False, indent=2),
+        signal,
+    )
+
+
+async def load_travel_matrix(session_id: str) -> Optional[dict]:
+    """读取移动时间矩阵；不存在时返回 None（排程会退化为经纬度兜底）"""
+    assert_valid_session_id(session_id)
+    try:
+        async with aiofiles.open(
+            _session_dir(session_id) / "travel-matrix.json", encoding="utf-8"
+        ) as f:
+            return json.loads(await f.read())
+    except FileNotFoundError:
+        return None
+
+
 async def load_session_state(session_id: str) -> Optional[dict]:
     assert_valid_session_id(session_id)
     try:
