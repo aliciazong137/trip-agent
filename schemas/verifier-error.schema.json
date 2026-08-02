@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "verifier-error.schema.json",
+  "title": "VerifierError",
+  "type": "object",
+  "required": ["errorCode", "message"],
+  "additionalProperties": false,
+  "properties": {
+    "errorCode": {
+      "type": "string",
+      "enum": [
+        "schema_error",
+        "hallucinated_poi",
+        "duplicate_poi",
+        "missing_must_poi",
+        "over_budget",
+        "day_overloaded",
+        "impossible_time_window",
+        "weak_evidence",
+        "unknown_route_time"
+      ]
+    },
+    "message": { "type": "string" },
+    "details": { "type": "object" },
+    "poi_id": { "type": "string" },
+    "day": { "type": "integer", "minimum": 1 }
+  }
+}

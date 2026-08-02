@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "trip-meta.schema.json",
+  "title": "TripMeta",
+  "type": "object",
+  "required": ["city", "days", "pace", "mustVisit", "avoid"],
+  "additionalProperties": false,
+  "properties": {
+    "city": { "type": "string", "minLength": 1 },
+    "days": { "type": "integer", "minimum": 1, "maximum": 14 },
+    "startDate": { "type": "string", "format": "date" },
+    "budget": {
+      "type": "object",
+      "required": ["currency", "amount"],
+      "properties": {
+        "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+        "amount": { "type": "number", "minimum": 0 }
+      }
+    },
+    "pace": { "type": "string", "enum": ["relaxed", "normal", "packed"] },
+    "mustVisit": { "type": "array", "items": { "type": "string" } },
+    "avoid": { "type": "array", "items": { "type": "string" } },
+    "travelers": {
+      "type": "object",
+      "properties": {
+        "adults": { "type": "integer", "minimum": 0 },
+        "kids": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

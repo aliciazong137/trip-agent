@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "session.schema.json",
+  "title": "Session",
+  "type": "object",
+  "required": ["sessionId", "phase", "intent", "updatedAt"],
+  "additionalProperties": false,
+  "properties": {
+    "sessionId": { "type": "string", "minLength": 1 },
+    "phase": {
+      "type": "string",
+      "enum": ["idle", "intake", "parsing", "parsed", "planning", "planned", "revising", "escalate"]
+    },
+    "intent": { "type": "string" },
+    "completed": { "type": "array", "items": { "type": "string" } },
+    "pendingQuestions": { "type": "array", "items": { "type": "string" } },
+    "confirmations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "errorCode", "decision"],
+        "properties": {
+          "id": { "type": "string" },
+          "errorCode": { "type": "string" },
+          "decision": { "type": "string", "enum": ["confirm", "replace", "remove"] },
+          "at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  }
+}

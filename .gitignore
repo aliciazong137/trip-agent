@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.env
+context/*/
+!context/.gitkeep
+*.log
+.DS_Store
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# backend session 数据（运行时产物，不入库）
+backend/context/*/
+!backend/context/.gitkeep
+backend/.env
+backend/memory/
+backend/tool-output/
+
+# RAG / Memory 运行时数据（第二/四期）
+data/chroma/
+data/memory.db

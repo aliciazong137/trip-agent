@@ -1,0 +1,58 @@
+{
+  "city": "osaka",
+  "pois": [
+    {
+      "id": "poi_usj",
+      "name": "环球影城",
+      "aliases": ["USJ", "Universal Studios Japan"],
+      "category": "attraction",
+      "area": "USJ",
+      "estimated_duration_minutes": 480,
+      "estimated_cost": 9000,
+      "opening_hours": "09:00-20:00",
+      "constraints": ["需预约", "全天项目"]
+    },
+    {
+      "id": "poi_dotonbori",
+      "name": "道顿堀",
+      "aliases": ["道頓堀"],
+      "category": "attraction",
+      "area": "Namba",
+      "estimated_duration_minutes": 120,
+      "estimated_cost": 0,
+      "opening_hours": "全天",
+      "constraints": ["夜景更佳"]
+    },
+    {
+      "id": "poi_osaka_castle",
+      "name": "大阪城",
+      "aliases": ["大阪城公园"],
+      "category": "attraction",
+      "area": "OsakaCastle",
+      "estimated_duration_minutes": 120,
+      "estimated_cost": 600,
+      "opening_hours": "09:00-17:00"
+    },
+    {
+      "id": "poi_kuromon",
+      "name": "黑门市场",
+      "aliases": ["黒門市場"],
+      "category": "restaurant",
+      "area": "Namba",
+      "estimated_duration_minutes": 90,
+      "estimated_cost": 3000,
+      "opening_hours": "09:00-17:00",
+      "constraints": ["适合午餐"]
+    },
+    {
+      "id": "poi_shinsekai",
+      "name": "新世界",
+      "aliases": ["通天阁"],
+      "category": "attraction",
+      "area": "Shinsekai",
+      "estimated_duration_minutes": 90,
+      "estimated_cost": 900,
+      "opening_hours": "10:00-20:00"
+    }
+  ]
+}
