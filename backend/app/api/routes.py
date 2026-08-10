@@ -4,6 +4,7 @@ API 路由 - 旅行规划
 H4 阶段：接入真实 TripPlannerAgent
 """
 import asyncio
+from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import (
@@ -119,6 +120,58 @@ async def create_trip_plan_from_nl(request: NlTripPlanRequest) -> NlTripPlanResp
             error_code="INTERNAL_ERROR",
             error_message=f"内部错误：{type(e).__name__}: {str(e)[:200]}",
         )
+
+
+# ─── RAG 调试接口（第二期） ────────────────────────────────────────────────────
+
+rag_router = APIRouter(prefix="/api/rag", tags=["rag"])
+
+
+@rag_router.get("/search")
+async def rag_search(q: str, top_k: int = 3, city: Optional[str] = None) -> dict:
+    """
+    RAG 检索调试接口
+
+    用法：
+        GET /api/rag/search?q=南京+中山陵&top_k=5&city=南京
+
+    响应：
+        若 RAG_DEBUG_RESPONSE=true：返回完整 content
+        否则只返回 sources 摘要（title + score），不含正文（避免暴露外部内容）
+    """
+    from app.rag import retriever
+
+    chunks = await retriever.search(q, top_k=top_k, city=city)
+
+    if settings.rag_debug_response:
+        return {
+            "query": q,
+            "city": city,
+            "count": len(chunks),
+            "chunks": [c.model_dump() for c in chunks],
+        }
+
+    return {
+        "query": q,
+        "city": city,
+        "count": len(chunks),
+        "sources": [
+            {"title": c.title or c.source, "score": round(c.score, 3),
+             "city": c.city, "is_external": c.is_external}
+            for c in chunks
+        ],
+    }
+
+
+@rag_router.get("/stats")
+async def rag_stats() -> dict:
+    """RAG 知识库统计"""
+    from app.rag import vectorstore
+    return {
+        "total_chunks": vectorstore.count(),
+        "chroma_path": str(settings.rag_chroma_dir),
+        "guides_path": str(settings.rag_guides_dir),
+    }
 
 
 health_router = APIRouter()
