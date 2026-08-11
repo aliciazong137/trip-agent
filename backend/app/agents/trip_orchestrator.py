@@ -11,6 +11,7 @@ TripPlanOrchestrator - 自然语言规划协调器（第一期）
   第一期不接 RAG/Memory。用户事实严格来自用户 query，不由知识库补全。
   第二期 RAG 只提供旅行知识给 Planner，不参与意图识别。
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -30,6 +31,10 @@ from app.services.clarification_store import (
     merge_query_for_clarification,
 )
 from app.utils.ids import assert_valid_session_id
+from app.config import settings
+from app.memory.manager import MemoryManager
+from app.memory.compressor import MemoryCompressor
+from app.memory.base import build_memory_text
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,8 @@ class TripPlanOrchestrator:
         # Planner 单例化由 routes.py 的 _get_planner 管理，这里每次 new 可能重复初始化 MCP
         # 改为延迟注入：由调用方传 planner 实例，或用类级单例
         self._planner: Optional[TripPlannerAgent] = None
+        self.memory = MemoryManager()
+        self.memory_compressor = MemoryCompressor()
 
     @property
     def planner(self) -> TripPlannerAgent:
@@ -61,6 +68,7 @@ class TripPlanOrchestrator:
         self,
         query: str,
         session_id: Optional[str] = None,
+        user_id: str = "default_user",
     ) -> NlTripPlanResponse:
         """
         从自然语言 query 生成规划
@@ -72,7 +80,18 @@ class TripPlanOrchestrator:
         Returns:
             NlTripPlanResponse
         """
-        # 1. session 续接：合并历史 query
+        # 1. Memory 检索（第四期新增）
+        # 仅作为偏好参考，不能用于补全 city/days/travelers/budget 等本次事实。
+        memory_context = ""
+        if settings.memory_enabled:
+            try:
+                memory_context = await asyncio.to_thread(
+                    self.memory.get_context_for_query, user_id or "default_user", query, 3
+                )
+            except Exception:
+                memory_context = ""
+
+        # 2. session 续接：合并历史 query
         merged_query = query
         prev_clarification = None
         if session_id:
@@ -93,8 +112,8 @@ class TripPlanOrchestrator:
                     session_id, merged_query[:100],
                 )
 
-        # 2. 意图识别（只从 query 抽取，无 RAG 上下文）
-        intent = await self.intent_recognizer.recognize(merged_query)
+        # 2. 意图识别（只从 query 抽取；memory_context 只作偏好提示，不补全事实）
+        intent = await self.intent_recognizer.recognize(merged_query, memory_context)
 
         # 3. 非旅行规划请求
         if intent.intent == "unsupported":
@@ -164,6 +183,31 @@ class TripPlanOrchestrator:
         trip_plan_data = result.get("trip_plan", {})
         trip_plan = TripPlan.model_validate(trip_plan_data) if trip_plan_data else None
         actual_session_id = result.get("session_id", session_id)
+
+        # 7. 规划成功后自动记录 Memory（不阻断主流程）
+        if settings.memory_enabled:
+            try:
+                compression = await self.memory_compressor.compress_trip(
+                    user_query=merged_query,
+                    trip_meta=trip_meta.model_dump(),
+                    trip_plan=trip_plan_data,
+                    warnings=result.get("warnings", []),
+                )
+                memory_text = build_memory_text(compression)
+                metadata = compression.model_dump()
+                metadata.update({
+                    "session_id": actual_session_id,
+                    "city": trip_meta.city,
+                    "days": trip_meta.days,
+                    "event_type": "trip_planned",
+                })
+                # working + episodic + semantic（完整复刻链路）
+                self.memory.add_memory(memory_text, user_id=user_id or "default_user", memory_type="working", importance=compression.importance, metadata=metadata)
+                eid = self.memory.add_memory(memory_text, user_id=user_id or "default_user", memory_type="episodic", importance=compression.importance, metadata=metadata)
+                for pref in compression.preferences:
+                    self.memory.add_memory(f"用户偏好：{pref}", user_id=user_id or "default_user", memory_type="semantic", importance=min(1.0, compression.importance), metadata={"event_type": "preference", "preference": pref, "source_memory_id": eid})
+            except Exception as e:
+                logger.warning("Memory 记录失败，不阻断规划: %s", e)
 
         return NlTripPlanResponse(
             status="ok",

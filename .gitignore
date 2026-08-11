@@ -24,3 +24,7 @@ backend/tool-output/
 # RAG / Memory 运行时数据（第二/四期）
 data/chroma/
 data/memory.db
+
+# HelloAgents MemoryTool 实测产物
+backend/memory_data/
+data/memory/

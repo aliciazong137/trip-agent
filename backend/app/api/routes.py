@@ -111,7 +111,7 @@ async def create_trip_plan_from_nl(request: NlTripPlanRequest) -> NlTripPlanResp
         用户补充后用同一 session_id + 新 query 再次调用，后端合并原 query。
     """
     try:
-        return await _get_orchestrator().plan_from_nl(request.query, request.session_id)
+        return await _get_orchestrator().plan_from_nl(request.query, request.session_id, request.user_id or "default_user")
     except Exception as e:
         # 未预期异常：返回 failed 而非 500，让前端可处理
         return NlTripPlanResponse(
@@ -172,6 +172,51 @@ async def rag_stats() -> dict:
         "chroma_path": str(settings.rag_chroma_dir),
         "guides_path": str(settings.rag_guides_dir),
     }
+
+
+# ─── Memory 调试接口（第四期） ───────────────────────────────────────────────
+
+memory_router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+
+def _get_memory_manager():
+    return _get_orchestrator().memory
+
+
+@memory_router.get("/{user_id}/search")
+async def memory_search(user_id: str, q: str, limit: int = 5) -> dict:
+    results = await asyncio.to_thread(_get_memory_manager().search, user_id, q, limit)
+    return {
+        "user_id": user_id,
+        "query": q,
+        "count": len(results),
+        "memories": [
+            {"id": r.item.id, "type": r.item.memory_type, "score": round(r.score, 3), "content": r.item.content, "metadata": r.item.metadata}
+            for r in results
+        ],
+    }
+
+
+@memory_router.get("/{user_id}/summary")
+async def memory_summary(user_id: str, limit: int = 10) -> dict:
+    return {"user_id": user_id, "summary": _get_memory_manager().summary(user_id, limit)}
+
+
+@memory_router.get("/{user_id}/stats")
+async def memory_stats(user_id: str) -> dict:
+    return _get_memory_manager().stats(user_id)
+
+
+@memory_router.post("/{user_id}/consolidate")
+async def memory_consolidate(user_id: str, from_type: str = "episodic", to_type: str = "semantic") -> dict:
+    n = await asyncio.to_thread(_get_memory_manager().consolidate, user_id, from_type, to_type)
+    return {"user_id": user_id, "consolidated": n}
+
+
+@memory_router.delete("/{user_id}")
+async def memory_clear(user_id: str) -> dict:
+    n = await asyncio.to_thread(_get_memory_manager().clear_all, user_id)
+    return {"user_id": user_id, "cleared": n}
 
 
 health_router = APIRouter()

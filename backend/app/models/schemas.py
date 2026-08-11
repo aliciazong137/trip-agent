@@ -276,6 +276,7 @@ class NlTripPlanRequest(BaseModel):
     """自然语言规划请求"""
     query: str = Field(..., min_length=2, max_length=2000, description="用户自然语言 query")
     session_id: Optional[str] = Field(default=None, description="会话 ID（澄清续接时携带）")
+    user_id: Optional[str] = Field(default="default_user", description="用户 ID（Memory 隔离用，未登录时用 default_user）")
 
 
 class IntentResult(BaseModel):

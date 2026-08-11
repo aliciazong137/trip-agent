@@ -82,5 +82,33 @@ class Settings:
         """测试用：覆盖 chroma 路径"""
         self.rag_chroma_path = str(path)
 
+    # Memory 配置（第四期，复刻 HelloAgents Memory 架构）
+    memory_enabled: bool = os.getenv("MEMORY_ENABLED", "true").lower() == "true"
+    memory_storage_path: str = os.getenv("MEMORY_STORAGE_PATH", "data/memory")
+    memory_working_capacity: int = int(os.getenv("MEMORY_WORKING_CAPACITY", "10"))
+    memory_working_ttl_minutes: int = int(os.getenv("MEMORY_WORKING_TTL_MINUTES", "120"))
+    memory_importance_threshold: float = float(os.getenv("MEMORY_IMPORTANCE_THRESHOLD", "0.1"))
+    memory_compress_mode: str = os.getenv("MEMORY_COMPRESS_MODE", "llm")  # llm | template
+    memory_compress_timeout: int = int(os.getenv("MEMORY_COMPRESS_TIMEOUT", "15"))
+    memory_compress_fallback: str = os.getenv("MEMORY_COMPRESS_FALLBACK", "template")
+
+    @property
+    def memory_dir(self) -> Path:
+        """Memory 存储目录（绝对路径）"""
+        p = Path(self.memory_storage_path)
+        if not p.is_absolute():
+            p = BACKEND_DIR.parent / p
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def memory_db_path(self) -> Path:
+        """Memory SQLite 路径"""
+        return self.memory_dir / "memory.db"
+
+    def set_memory_storage_path(self, path) -> None:
+        """测试用：覆盖 memory 存储目录"""
+        self.memory_storage_path = str(path)
+
 
 settings = Settings()

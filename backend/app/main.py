@@ -6,7 +6,7 @@ FastAPI 主入口
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router, health_router, rag_router
+from app.api.routes import router, health_router, rag_router, memory_router
 from app.config import settings
 
 app = FastAPI(
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(health_router, tags=["health"])
 app.include_router(router)
 app.include_router(rag_router)
+app.include_router(memory_router)
 
 
 @app.get("/")

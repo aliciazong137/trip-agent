@@ -151,12 +151,19 @@ class TripIntentRecognizer:
         )
         self.max_retries = max_retries
 
-    def recognize_sync(self, query: str) -> IntentResult:
+    def recognize_sync(self, query: str, memory_context: str = "") -> IntentResult:
         """同步识别（用于 run_in_threadpool 包装）"""
         last_error: Optional[str] = None
+        user_input = query
+        if memory_context:
+            user_input = (
+                f"用户本次 query：{query}\n\n"
+                f"以下是该用户历史记忆，仅供偏好参考，禁止用于补全 city/days/travelers/budget 等本次事实：\n"
+                f"{memory_context}"
+            )
         for attempt in range(self.max_retries + 1):
             try:
-                response = self.agent.run(query)
+                response = self.agent.run(user_input)
                 data = _extract_json_from_response(response)
                 if data is None:
                     last_error = f"LLM 响应中未找到 JSON: {response[:200]}"
@@ -180,7 +187,7 @@ class TripIntentRecognizer:
             assumptions=[],
         )
 
-    async def recognize(self, query: str) -> IntentResult:
+    async def recognize(self, query: str, memory_context: str = "") -> IntentResult:
         """异步识别：把同步调用丢到线程池"""
         import asyncio
-        return await asyncio.to_thread(self.recognize_sync, query)
+        return await asyncio.to_thread(self.recognize_sync, query, memory_context)
