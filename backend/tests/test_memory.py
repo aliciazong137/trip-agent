@@ -1,5 +1,6 @@
 import shutil
 import tempfile
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -117,6 +118,9 @@ async def test_orchestrator_records_memory_after_success(monkeypatch):
 
     resp = await orch.plan_from_nl("我想去南京玩2天，偏好历史文化", user_id="user_a")
     assert resp.status == "ok"
+    # 第六阶段：memory 写入改为后台 task，测试需等待完成
+    if orch._background_tasks:
+        await asyncio.gather(*orch._background_tasks, return_exceptions=True)
     memories = store.list_memories("user_a", limit=100)
     types = {m.memory_type for m in memories}
     assert "episodic" in types
@@ -141,3 +145,6 @@ async def test_memory_does_not_block_planning(monkeypatch):
     orch.memory.add_memory = MagicMock(side_effect=RuntimeError("memory down"))
     resp = await orch.plan_from_nl("去南京2天", user_id="user_a")
     assert resp.status == "ok"
+    # 后台任务里的异常被吞掉，不抛出
+    if orch._background_tasks:
+        await asyncio.gather(*orch._background_tasks, return_exceptions=True)

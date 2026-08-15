@@ -56,6 +56,8 @@ class TripPlanOrchestrator:
         self._planner: Optional[TripPlannerAgent] = None
         self.memory = MemoryManager()
         self.memory_compressor = MemoryCompressor()
+        # 第六阶段：后台 memory 写入任务引用（防 GC，响应不等待压缩）
+        self._background_tasks: set = set()
 
     @property
     def planner(self) -> TripPlannerAgent:
@@ -199,30 +201,18 @@ class TripPlanOrchestrator:
                 warnings=result.get("warnings", []),
             )
 
-        # 7. 规划成功后自动记录 Memory（不阻断主流程）
+        # 7. 规划成功后后台异步记录 Memory（第六阶段：不阻塞响应）
+        # 压缩是 LLM 调用（约 10-15s），放在后台写，响应立即返回。
+        # memory 是增强而非关键路径，进程崩溃丢一条记录可接受。
         if settings.memory_enabled:
-            try:
-                compression = await self.memory_compressor.compress_trip(
-                    user_query=merged_query,
-                    trip_meta=trip_meta.model_dump(),
-                    trip_plan=trip_plan_data,
-                    warnings=result.get("warnings", []),
-                )
-                memory_text = build_memory_text(compression)
-                metadata = compression.model_dump()
-                metadata.update({
-                    "session_id": actual_session_id,
-                    "city": trip_meta.city,
-                    "days": trip_meta.days,
-                    "event_type": "trip_planned",
-                })
-                # working + episodic + semantic（完整复刻链路）
-                self.memory.add_memory(memory_text, user_id=user_id or "default_user", memory_type="working", importance=compression.importance, metadata=metadata)
-                eid = self.memory.add_memory(memory_text, user_id=user_id or "default_user", memory_type="episodic", importance=compression.importance, metadata=metadata)
-                for pref in compression.preferences:
-                    self.memory.add_memory(f"用户偏好：{pref}", user_id=user_id or "default_user", memory_type="semantic", importance=min(1.0, compression.importance), metadata={"event_type": "preference", "preference": pref, "source_memory_id": eid})
-            except Exception as e:
-                logger.warning("Memory 记录失败，不阻断规划: %s", e)
+            self._schedule_memory_recording(
+                merged_query=merged_query,
+                trip_meta=trip_meta,
+                trip_plan_data=trip_plan_data,
+                warnings=result.get("warnings", []),
+                user_id=user_id or "default_user",
+                session_id=actual_session_id,
+            )
 
         return NlTripPlanResponse(
             status="ok",
@@ -232,3 +222,39 @@ class TripPlanOrchestrator:
             assumptions=intent.assumptions,
             warnings=result.get("warnings", []),
         )
+
+    def _schedule_memory_recording(self, merged_query: str, trip_meta, trip_plan_data: dict,
+                                   warnings: list, user_id: str, session_id: str) -> asyncio.Task:
+        """后台调度 memory 记录，返回 task（测试可 await）"""
+        task = asyncio.create_task(
+            self._record_memory_safe(merged_query, trip_meta, trip_plan_data, warnings, user_id, session_id)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    async def _record_memory_safe(self, merged_query: str, trip_meta, trip_plan_data: dict,
+                                  warnings: list, user_id: str, session_id: str) -> None:
+        """后台 memory 记录，任何异常只记日志不抛出"""
+        try:
+            compression = await self.memory_compressor.compress_trip(
+                user_query=merged_query,
+                trip_meta=trip_meta.model_dump(),
+                trip_plan=trip_plan_data,
+                warnings=warnings,
+            )
+            memory_text = build_memory_text(compression)
+            metadata = compression.model_dump()
+            metadata.update({
+                "session_id": session_id,
+                "city": trip_meta.city,
+                "days": trip_meta.days,
+                "event_type": "trip_planned",
+            })
+            # working + episodic + semantic（完整复刻链路）
+            self.memory.add_memory(memory_text, user_id=user_id, memory_type="working", importance=compression.importance, metadata=metadata)
+            eid = self.memory.add_memory(memory_text, user_id=user_id, memory_type="episodic", importance=compression.importance, metadata=metadata)
+            for pref in compression.preferences:
+                self.memory.add_memory(f"用户偏好：{pref}", user_id=user_id, memory_type="semantic", importance=min(1.0, compression.importance), metadata={"event_type": "preference", "preference": pref, "source_memory_id": eid})
+        except Exception as e:
+            logger.warning("Memory 后台记录失败（不影响规划）: %s", e)
