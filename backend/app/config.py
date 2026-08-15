@@ -15,6 +15,10 @@ class Settings:
     llm_model_id: str = os.getenv("LLM_MODEL_ID", "glm-5.2")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+    # glm-5.2 默认 thinking.type=enabled，每轮调用先跑思考链（实测 14s vs 关思考 5.5s）。
+    # 研究 Agent 的工具调用是结构化任务，思考收益低。试验证实关思考无行为退化
+    # （轮次/JSON/POI 不变，attraction 67s → 21s）。默认开，env 可回退。
+    llm_thinking_disabled: bool = os.getenv("LLM_THINKING_DISABLED", "true").lower() == "true"
 
     # 高德地图
     amap_api_key: str = os.getenv("AMAP_API_KEY", "")

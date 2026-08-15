@@ -247,7 +247,12 @@ class TripPlannerAgent:
         planner_query = self._build_planner_query(
             trip_meta, attraction_response, weather_response, hotel_response, session_id, itinerary
         )
-        planner_response = await asyncio.to_thread(self.planner_agent.run, planner_query)
+        # PlannerAgent 纯 JSON 整合（无工具调用），同样关思考提速
+        planner_kwargs = (
+            {"extra_body": {"thinking": {"type": "disabled"}}}
+            if settings.llm_thinking_disabled else {}
+        )
+        planner_response = await asyncio.to_thread(self.planner_agent.run, planner_query, **planner_kwargs)
 
         # 5. 解析 TripPlan
         trip_plan = _parse_llm_json(planner_response) or {
@@ -346,14 +351,24 @@ class TripPlannerAgent:
 
         第零期三作续修保留：attraction agent 传 max_tool_iterations=max_tool_calls，
         与 prompt 里告诉 LLM 的工具调用预算对齐（根治间歇性不吐 JSON）。
+
+        第四阶段：研究 Agent 关 GLM 思考（thinking=disabled）。
+        glm-5.2 默认开思考，每轮先跑思考链（实测 14s vs 关思考 5.5s）。
+        试验证实关思考无行为退化（轮次/JSON/POI 不变，attraction 67s → 21s）。
+        SimpleAgent.run 的 **kwargs 每轮透传给 llm.invoke → API extra_body。
+        配置开关 settings.llm_thinking_disabled（默认开，env 可回退）。
         """
+        think_kwargs = (
+            {"extra_body": {"thinking": {"type": "disabled"}}}
+            if settings.llm_thinking_disabled else {}
+        )
         self.amap_tool.open_shared()
         try:
             attraction_response = self.attraction_agent.run(
-                attraction_query, max_tool_iterations=max_tool_calls
+                attraction_query, max_tool_iterations=max_tool_calls, **think_kwargs
             )
-            weather_response = self.weather_agent.run(weather_query)
-            hotel_response = self.hotel_agent.run(hotel_query)
+            weather_response = self.weather_agent.run(weather_query, **think_kwargs)
+            hotel_response = self.hotel_agent.run(hotel_query, **think_kwargs)
             return attraction_response, weather_response, hotel_response
         finally:
             self.amap_tool.close_shared()
