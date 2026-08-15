@@ -184,6 +184,21 @@ class TripPlanOrchestrator:
         trip_plan = TripPlan.model_validate(trip_plan_data) if trip_plan_data else None
         actual_session_id = result.get("session_id", session_id)
 
+        # 第零期三作：Planner 返回 poi_empty 时降级为 failed
+        # 不再静默返回 ok + 空行程
+        plan_status = result.get("status", "ok")
+        if plan_status == "poi_empty":
+            return NlTripPlanResponse(
+                status="failed",
+                session_id=actual_session_id,
+                trip_meta=trip_meta,
+                trip_plan=trip_plan,
+                error_code="POI_EXTRACTION_EMPTY",
+                error_message="景点提取失败，未生成行程。请补充更明确的 must_visit 或 preferences。",
+                assumptions=intent.assumptions,
+                warnings=result.get("warnings", []),
+            )
+
         # 7. 规划成功后自动记录 Memory（不阻断主流程）
         if settings.memory_enabled:
             try:

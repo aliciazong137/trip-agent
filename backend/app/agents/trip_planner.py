@@ -195,6 +195,21 @@ class TripPlannerAgent:
         # 3. 确定性排程（Python 直接调，不经过 LLM）
         # 从景点研究结果提取 POI（LLM 返回的 JSON 数组）
         pois = self._extract_pois_from_response(attraction_response, city)
+
+        # 第零期三作：POI 提取为空时，用 must_visit + 高德 maps_text_search 兜底
+        fallback_used = False
+        if not pois and must_visit:
+            pois = await self._fallback_pois_from_must_visit(city, must_visit)
+            if pois:
+                fallback_used = True
+                schedule_warnings = [
+                    f"景点 Agent 提取 POI 失败，已用 must_visit 兜底生成 {len(pois)} 个基础 POI"
+                ]
+            else:
+                schedule_warnings = ["未能从景点研究结果提取 POI，must_visit 兜底也失败"]
+        elif not pois:
+            schedule_warnings = ["未能从景点研究结果提取 POI，且无 must_visit 可兜底"]
+
         if pois:
             await session_store.save_poi_list(session_id, {"city": city, "pois": pois})
 
@@ -213,10 +228,13 @@ class TripPlannerAgent:
             await session_store.save_itinerary(session_id, schedule_result["itinerary"])
             await session_store.update_session_phase(session_id, "planned")
             itinerary = schedule_result["itinerary"]
-            schedule_warnings = schedule_result["warnings"]
+            if not fallback_used:
+                schedule_warnings = schedule_result["warnings"]
+            else:
+                # fallback 模式：叠加排程 warnings
+                schedule_warnings = schedule_warnings + schedule_result["warnings"]
         else:
             itinerary = {"session_id": session_id, "city": city, "version": 1, "days": []}
-            schedule_warnings = ["未能从景点研究结果提取 POI，跳过确定性排程"]
 
         # 4. PlannerAgent（SimpleAgent，一次 LLM 调用）整合所有结果
         planner_query = self._build_planner_query(
@@ -257,11 +275,16 @@ class TripPlannerAgent:
                 "total": deterministic_attractions_cost,
             }
 
+        # 第零期三作：status 反映确定性排程是否真正产出行程
+        # - "ok"：itinerary.days 非空，行程已生成
+        # - "poi_empty"：POI 提取失败（含 fallback 失败），行程为空
+        plan_status = "ok" if itinerary.get("days") else "poi_empty"
+
         return {
             "session_id": session_id,
+            "status": plan_status,
             "trip_plan": trip_plan,
             "warnings": schedule_warnings,
-            "status": "ok",
             "research": {
                 "attractions": (attraction_response or "")[:800],
                 "weather": (weather_response or "")[:800],
@@ -300,6 +323,111 @@ class TripPlannerAgent:
                 pass
 
         return []
+
+    async def _fallback_pois_from_must_visit(self, city: str, must_visit: list) -> list:
+        """
+        第零期三作：景点 Agent 提取失败时，用 must_visit 直接调高德 maps_text_search 兜底
+
+        策略：
+          - 对每个 must_visit 项调 maps_text_search，取第 1 个结果
+          - 用搜到的 id/name/location 构造最小 POI
+          - estimated_duration_minutes 默认 240（4 小时），estimated_cost=0（未知不阻塞排程）
+          - priority="must"
+          - 调用 maps_search_detail 补 location（text_search 可能不返回坐标）
+
+        失败的 must_visit 项跳过，不影响其他项。
+        全部失败时返回 []，由调用方决定 status。
+        """
+        if not must_visit or not city:
+            return []
+
+        pois = []
+        seen_ids = set()
+        for spot in must_visit:
+            if not isinstance(spot, str) or not spot.strip():
+                continue
+            try:
+                raw = await asyncio.to_thread(
+                    self.amap_tool.run,
+                    {
+                        "tool_name": "maps_text_search",
+                        "arguments": {"keywords": spot.strip(), "city": city},
+                    },
+                )
+            except Exception:
+                continue
+
+            poi = self._build_fallback_poi(raw, city, spot.strip())
+            if poi and poi["id"] and poi["id"] not in seen_ids:
+                seen_ids.add(poi["id"])
+                pois.append(poi)
+
+        return pois
+
+    def _build_fallback_poi(self, raw: str, city: str, spot: str) -> Optional[dict]:
+        """从 maps_text_search 返回值构造最小 POI dict"""
+        import json as _json
+        import re as _re
+
+        # 解析高德返回（和 _parse_distance_results 同款解析逻辑）
+        data = raw
+        if isinstance(raw, str):
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return None
+            try:
+                data = _json.loads(raw[start : end + 1])
+            except _json.JSONDecodeError:
+                return None
+
+        if not isinstance(data, dict):
+            return None
+
+        # 高德 maps_text_search 返回 {"pois": [{"id","name","location","address",...}]}
+        pois_list = data.get("pois") or data.get("results") or []
+        if not isinstance(pois_list, list) or not pois_list:
+            return None
+
+        first = pois_list[0]
+        if not isinstance(first, dict):
+            return None
+
+        poi_id = first.get("id") or first.get("poi_id")
+        name = first.get("name") or spot
+        # location 格式 "经度,纬度"
+        loc_raw = first.get("location") or first.get("longitude") or ""
+        location = {}
+        if isinstance(loc_raw, str) and "," in loc_raw:
+            parts = loc_raw.split(",")
+            if len(parts) == 2:
+                try:
+                    location = {"longitude": float(parts[0]), "latitude": float(parts[1])}
+                except (ValueError, TypeError):
+                    pass
+        elif isinstance(first.get("location"), dict):
+            loc = first["location"]
+            if loc.get("longitude") and loc.get("latitude"):
+                location = {"longitude": float(loc["longitude"]), "latitude": float(loc["latitude"])}
+
+        if not poi_id:
+            return None
+
+        # 兜底 POI：最小可用字段，duration 默认 240 分钟，cost 0（未知，不阻塞排程）
+        return {
+            "id": str(poi_id),
+            "name": name,
+            "category": "attraction",
+            "area": (first.get("address") or "")[:50] or city,
+            "location": location,
+            "priority": "must",
+            "estimated_duration_minutes": 240,
+            "estimated_cost": 0,
+            "opening_hours": first.get("opentime2") or "",
+            "rating": float(first.get("rating") or 0) or 0,
+            "level": "",
+            "description": f"必去景点（兜底）：{spot}",
+        }
 
     def _build_planner_query(
         self,
