@@ -247,3 +247,55 @@ class TestOrchestratorPoiEmptyDegradation:
 
         resp = await orch.plan_from_nl("去南京玩2天", user_id="u_test")
         assert resp.status == "ok"
+
+
+# ─── max_tool_iterations 传递（根因修复验证） ─────────────────────────────────
+
+class TestAttractionMaxToolIterations:
+    """plan_trip 调 attraction_agent.run 时必须传 max_tool_iterations
+
+    根因：SimpleAgent.run 默认 max_tool_iterations=3，景点工作流需 8-10 次工具调用，
+    3 轮耗尽后裸调 LLM 输出不稳定，导致 POI 间歇性提取失败。
+    """
+
+    @pytest.mark.asyncio
+    async def test_plan_trip_passes_max_tool_iterations(self):
+        """attraction_agent.run 收到的 kwargs 含 max_tool_iterations=max_tool_calls"""
+        from app.agents.trip_planner import TripPlannerAgent
+
+        planner = object.__new__(TripPlannerAgent)
+
+        # mock 4 个 agent 的 run（同步 MagicMock，asyncio.to_thread 会在线程里执行）
+        planner.attraction_agent = MagicMock()
+        planner.attraction_agent.run = MagicMock(return_value="")  # 空回复 → 触发 fallback
+        planner.weather_agent = MagicMock()
+        planner.weather_agent.run = MagicMock(return_value="")
+        planner.hotel_agent = MagicMock()
+        planner.hotel_agent.run = MagicMock(return_value="")
+        planner.planner_agent = MagicMock()
+        planner.planner_agent.run = MagicMock(return_value="")
+
+        # amap_tool：text_search 返回 POI（给 fallback 用），maps_distance 返回空
+        def fake_amap_run(params):
+            tool = (params or {}).get("tool_name", "")
+            if tool == "maps_text_search":
+                return json.dumps({"pois": [{
+                    "id": "B001", "name": "中山陵景区", "location": "118.854,32.054",
+                }]})
+            return json.dumps({"results": []})
+
+        planner.amap_tool = MagicMock()
+        planner.amap_tool.run = MagicMock(side_effect=fake_amap_run)
+
+        trip_meta = {"city": "南京", "days": 2, "must_visit": ["中山陵"], "pace": "normal"}
+        result = await planner.plan_trip(trip_meta)
+
+        # max_tool_calls = len(must_visit)=1 + 1 + max_pois=min(2*3,8)=6 + 2 = 10
+        call = planner.attraction_agent.run.call_args
+        assert call is not None, "attraction_agent.run 未被调用"
+        kwargs = call.kwargs
+        assert kwargs.get("max_tool_iterations") == 10, (
+            f"期望 max_tool_iterations=10，实际 {kwargs.get('max_tool_iterations')}"
+        )
+        # fallback 兜底生成了 POI → 不应是 poi_empty
+        assert result["status"] == "ok"

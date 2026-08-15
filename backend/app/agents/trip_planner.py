@@ -181,7 +181,13 @@ class TripPlannerAgent:
             f"至少 {min_pois} 个、最多 {max_pois} 个 POI。\n"
             f"[TOOL_CALL:amap_maps_text_search:keywords={preferences},city={city}]"
         )
-        attraction_response = await asyncio.to_thread(self.attraction_agent.run, attraction_query)
+        # 第零期三作续修：传 max_tool_iterations，与 prompt 里告诉 LLM 的 max_tool_calls 对齐。
+        # 诊断根因：SimpleAgent.run 默认 max_tool_iterations=3，而景点工作流需 8-10 次工具调用。
+        # LLM 一轮打包多个调用时 3 轮够用；逐个发时 3 轮耗尽，超上限后裸调 LLM 输出不稳定
+        # （可能是工具调用文本而非 JSON），导致 _extract_pois_from_response 间歇性提取失败。
+        attraction_response = await asyncio.to_thread(
+            self.attraction_agent.run, attraction_query, max_tool_iterations=max_tool_calls
+        )
 
         weather_query = f"请查询 {city} 的天气信息\n[TOOL_CALL:amap_maps_weather:city={city}]"
         weather_response = await asyncio.to_thread(self.weather_agent.run, weather_query)
