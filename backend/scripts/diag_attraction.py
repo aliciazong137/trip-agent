@@ -32,7 +32,20 @@ async def main():
     print("=" * 60)
     print("QUERY:", attraction_query)
     print("=" * 60)
-    resp = await asyncio.to_thread(planner.attraction_agent.run, attraction_query)
+
+    # 统计 LLM 调用轮次（第三阶段：验证打包引导后轮次是否下降）
+    llm_calls = {"n": 0}
+    orig_invoke = planner.llm.invoke
+    def counting_invoke(*args, **kwargs):
+        llm_calls["n"] += 1
+        return orig_invoke(*args, **kwargs)
+    planner.llm.invoke = counting_invoke
+
+    import time as _t
+    t0 = _t.time()
+    resp = planner.attraction_agent.run(attraction_query, max_tool_iterations=max_tool_calls)
+    elapsed = _t.time() - t0
+    print(f"LLM 调用轮次: {llm_calls['n']}  总耗时: {elapsed:.1f}s")
     print("RESPONSE LENGTH:", len(resp or ""))
     print("=" * 60)
     print("RESPONSE FULL:")

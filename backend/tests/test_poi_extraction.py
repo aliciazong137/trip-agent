@@ -299,3 +299,36 @@ class TestAttractionMaxToolIterations:
         )
         # fallback 兜底生成了 POI → 不应是 poi_empty
         assert result["status"] == "ok"
+
+
+# ─── 第三阶段：prompt 打包调用引导 ─────────────────────────────────────────────
+
+class TestAttractionPromptPacking:
+    """prompt 必须引导 LLM 同轮打包无依赖调用（减少 LLM 轮次）"""
+
+    def test_prompt_has_packing_rule(self):
+        from app.agents.prompts import ATTRACTION_AGENT_PROMPT
+        s = ATTRACTION_AGENT_PROMPT.format(days=2, min_pois=4, max_pois=6, max_tool_calls=11)
+        assert "打包调用" in s
+        assert "禁止一轮只发一个调用" in s
+
+    def test_prompt_example_shows_batched_calls(self):
+        """示例里同一轮连续输出多个 TOOL_CALL（无串行暗示）"""
+        from app.agents.prompts import ATTRACTION_AGENT_PROMPT
+        s = ATTRACTION_AGENT_PROMPT.format(days=2, min_pois=4, max_pois=6, max_tool_calls=11)
+        assert "[TOOL_CALL:amap_maps_text_search:keywords=故宫,city=北京]\n[TOOL_CALL:amap_maps_text_search:keywords=八达岭长城,city=北京]" in s
+        # 串行暗示文案已删
+        assert "搜完故宫后继续搜八达岭" not in s
+
+    def test_prompt_workflow_is_round_based(self):
+        """工作流按轮组织，明确 4 轮结构"""
+        from app.agents.prompts import ATTRACTION_AGENT_PROMPT
+        s = ATTRACTION_AGENT_PROMPT.format(days=2, min_pois=4, max_pois=6, max_tool_calls=11)
+        assert "第 1 轮" in s and "第 2 轮" in s and "第 3 轮" in s and "第 4 轮" in s
+
+    def test_prompt_format_placeholders_intact(self):
+        """format 注入后无残留占位符"""
+        from app.agents.prompts import ATTRACTION_AGENT_PROMPT
+        s = ATTRACTION_AGENT_PROMPT.format(days=3, min_pois=6, max_pois=8, max_tool_calls=13)
+        for ph in ("{days}", "{min_pois}", "{max_pois}", "{max_tool_calls}"):
+            assert ph not in s

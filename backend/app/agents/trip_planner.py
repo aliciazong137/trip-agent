@@ -18,7 +18,6 @@ import uuid
 from typing import Optional
 
 from hello_agents import HelloAgentsLLM, SimpleAgent, ReActAgent, ToolRegistry
-from hello_agents.tools import MCPTool
 
 from app.agents.prompts import (
     ATTRACTION_AGENT_PROMPT,
@@ -26,6 +25,7 @@ from app.agents.prompts import (
     HOTEL_AGENT_PROMPT,
     PLANNER_AGENT_PROMPT,
 )
+from app.tools.persistent_mcp import PersistentMCPTool
 from app.tools.state_tools import BuildItineraryTool, CheckConstraintsTool, ReviseDayTool
 from app.services import session_store
 from app.config import settings
@@ -36,9 +36,14 @@ def new_session_id() -> str:
     return f"sess_{uuid.uuid4().hex[:12]}"
 
 
-def _create_amap_mcp_tool() -> MCPTool:
-    """创建高德地图 MCP 工具（共享实例，16 个工具自动展开）"""
-    tool = MCPTool(
+def _create_amap_mcp_tool() -> PersistentMCPTool:
+    """创建高德地图 MCP 工具（共享实例，16 个工具自动展开）
+
+    第二阶段：改用 PersistentMCPTool 子类，研究阶段可复用一次进程连接，
+    避免每次工具调用新建 uvx 子进程（5-8 秒/次固定开销）。
+    接口与 MCPTool 完全兼容，无共享连接时回落父类短连接。
+    """
+    tool = PersistentMCPTool(
         name="amap",
         description="高德地图服务",
         server_command=["uvx", "amap-mcp-server"],
@@ -181,22 +186,18 @@ class TripPlannerAgent:
             f"至少 {min_pois} 个、最多 {max_pois} 个 POI。\n"
             f"[TOOL_CALL:amap_maps_text_search:keywords={preferences},city={city}]"
         )
-        # 第零期三作续修：传 max_tool_iterations，与 prompt 里告诉 LLM 的 max_tool_calls 对齐。
-        # 诊断根因：SimpleAgent.run 默认 max_tool_iterations=3，而景点工作流需 8-10 次工具调用。
-        # LLM 一轮打包多个调用时 3 轮够用；逐个发时 3 轮耗尽，超上限后裸调 LLM 输出不稳定
-        # （可能是工具调用文本而非 JSON），导致 _extract_pois_from_response 间歇性提取失败。
-        attraction_response = await asyncio.to_thread(
-            self.attraction_agent.run, attraction_query, max_tool_iterations=max_tool_calls
-        )
-
         weather_query = f"请查询 {city} 的天气信息\n[TOOL_CALL:amap_maps_weather:city={city}]"
-        weather_response = await asyncio.to_thread(self.weather_agent.run, weather_query)
-
         hotel_query = (
             f"请搜索 {city} 的 {accommodation} 酒店\n"
             f"[TOOL_CALL:amap_maps_text_search:keywords=酒店,city={city}]"
         )
-        hotel_response = await asyncio.to_thread(self.hotel_agent.run, hotel_query)
+
+        # 2. 串行调 3 个研究 Agent（第十三章原版做法，MCP server 单进程串行处理）
+        #    第二阶段：整个研究阶段包在一个线程的一个 loop 里，MCP 进程只启动一次。
+        attraction_response, weather_response, hotel_response = await asyncio.to_thread(
+            self._research_phase_sync,
+            attraction_query, weather_query, hotel_query, max_tool_calls,
+        )
 
         # 3. 确定性排程（Python 直接调，不经过 LLM）
         # 从景点研究结果提取 POI（LLM 返回的 JSON 数组）
@@ -329,6 +330,33 @@ class TripPlannerAgent:
                 pass
 
         return []
+
+    def _research_phase_sync(self, attraction_query: str, weather_query: str,
+                             hotel_query: str, max_tool_calls: int):
+        """
+        整个研究阶段跑在一个线程的一个 loop 里，MCP 进程只启动一次（第二阶段优化）
+
+        流程：open_shared → 3 个研究 Agent 串行 run → finally close_shared
+
+        正确性：
+          - asyncio.to_thread 的 worker 线程无运行中的 loop，open_shared 建新 loop
+          - 3 个 Agent 串行，SimpleAgent 循环内 MCPWrappedTool.run →
+            PersistentMCPTool.run 检测共享连接复用，无并发无需锁
+          - finally 必关，异常也不泄漏进程；close 后 fallback/prefetch 自动回落短连接
+
+        第零期三作续修保留：attraction agent 传 max_tool_iterations=max_tool_calls，
+        与 prompt 里告诉 LLM 的工具调用预算对齐（根治间歇性不吐 JSON）。
+        """
+        self.amap_tool.open_shared()
+        try:
+            attraction_response = self.attraction_agent.run(
+                attraction_query, max_tool_iterations=max_tool_calls
+            )
+            weather_response = self.weather_agent.run(weather_query)
+            hotel_response = self.hotel_agent.run(hotel_query)
+            return attraction_response, weather_response, hotel_response
+        finally:
+            self.amap_tool.close_shared()
 
     async def _fallback_pois_from_must_visit(self, city: str, must_visit: list) -> list:
         """
