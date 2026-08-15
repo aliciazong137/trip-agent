@@ -708,3 +708,117 @@ class TestEmptyDayWarning:
         # 1 天 0 POI 时 Day1 空，也应提示
         # （单天空也有诊断价值，不应跳过）
         assert any("未安排任何 POI" in w for w in result["warnings"])
+
+
+# ─── 第五阶段：must 语义分级（用户必去 vs LLM 自标） ───────────────────────────
+
+from app.core.scheduler import _is_user_must_visit
+
+
+class TestIsUserMustVisit:
+    """_is_user_must_visit 名称/ID 包含匹配"""
+
+    def test_short_name_matches_full_name(self):
+        """用户短名 "中山陵" 匹配高德全称 "中山陵景区" """
+        poi = {"id": "poi_zsl", "name": "中山陵景区"}
+        assert _is_user_must_visit(poi, ["中山陵", "夫子庙"]) is True
+
+    def test_full_name_contains(self):
+        """反向包含：用户写了更长的名字"""
+        poi = {"id": "poi_fzm", "name": "夫子庙"}
+        assert _is_user_must_visit(poi, ["南京夫子庙"]) is True
+
+    def test_no_match(self):
+        poi = {"id": "poi_bwg", "name": "南京博物院"}
+        assert _is_user_must_visit(poi, ["中山陵", "夫子庙"]) is False
+
+    def test_empty_must_visit(self):
+        poi = {"id": "poi_zsl", "name": "中山陵景区"}
+        assert _is_user_must_visit(poi, []) is False
+        assert _is_user_must_visit(poi, None) is False
+
+    def test_id_match(self):
+        poi = {"id": "poi_zhongshanling", "name": "某景区"}
+        assert _is_user_must_visit(poi, ["zhongshanling"]) is True
+
+
+class TestUserMustPriorityInScheduling:
+    """排程分级：must 冲突时用户 must_visit 优先保留"""
+
+    @pytest.mark.asyncio
+    async def test_user_must_survives_over_llm_must(self):
+        """4 个 must（2 用户 + 2 LLM 自标）+ relaxed 2 天 → 用户项排入，LLM 项被挤且 warning 区分"""
+        # relaxed 每日 360 分钟；4 个 must 各 240 分钟，2 天最多 3 个（含移动）
+        pois = [
+            base_poi({"id": "poi_llm_a", "name": "大屠杀纪念馆", "priority": "must",
+                      "estimated_duration_minutes": 240}),
+            base_poi({"id": "poi_llm_b", "name": "南京博物院", "priority": "must",
+                      "estimated_duration_minutes": 240}),
+            base_poi({"id": "poi_user_zsl", "name": "中山陵景区", "priority": "must",
+                      "estimated_duration_minutes": 240}),
+            base_poi({"id": "poi_user_fzm", "name": "南京夫子庙", "priority": "must",
+                      "estimated_duration_minutes": 240}),
+        ]
+        result = await build_itinerary_from_data(
+            SESSION_ID,
+            {"city": "南京", "days": 2, "pace": "relaxed",
+             "must_visit": ["中山陵", "夫子庙"]},
+            {"city": "南京", "pois": pois},
+        )
+        placed = [
+            b["poi_id"]
+            for d in result["itinerary"]["days"]
+            for b in d.get("time_blocks", [])
+        ]
+        # 用户指定的两个必须排入
+        assert "poi_user_zsl" in placed
+        assert "poi_user_fzm" in placed
+        # 未排入的 LLM 自标项 warning 不应标为"用户指定"
+        user_warnings = [w for w in result["warnings"] if "用户指定的必去景点" in w]
+        assert all("中山陵" not in w and "夫子庙" not in w for w in user_warnings)
+
+    @pytest.mark.asyncio
+    async def test_user_must_warning_when_user_item_dropped(self):
+        """极端场景：用户 must_visit 项也排不下时，warning 明确标"用户指定的必去景点" """
+        pois = [
+            base_poi({"id": f"poi_u{i}", "name": name, "priority": "must",
+                      "estimated_duration_minutes": 340})
+            for i, name in enumerate(["中山陵景区", "南京夫子庙", "明孝陵", "玄武湖"])
+        ]
+        result = await build_itinerary_from_data(
+            SESSION_ID,
+            {"city": "南京", "days": 1, "pace": "relaxed",
+             "must_visit": ["中山陵", "夫子庙", "明孝陵", "玄武湖"]},
+            {"city": "南京", "pois": pois},
+        )
+        assert any("用户指定的必去景点" in w for w in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_no_must_visit_behavior_unchanged(self):
+        """无 must_visit 时行为与原来一致（普通必去 warning）"""
+        pois = [
+            base_poi({"id": f"poi_m{i}", "name": f"景点{i}", "priority": "must",
+                      "estimated_duration_minutes": 340})
+            for i in range(3)
+        ]
+        result = await build_itinerary_from_data(
+            SESSION_ID,
+            {"city": "北京", "days": 1, "pace": "relaxed"},
+            {"city": "北京", "pois": pois},
+        )
+        assert any("必去项" in w and "用户指定" not in w for w in result["warnings"])
+
+
+class TestPromptMustRuleTightened:
+    """prompt 收紧：禁止 LLM 自标 must"""
+
+    def test_prompt_forbids_llm_must(self):
+        from app.agents.prompts import ATTRACTION_AGENT_PROMPT
+        s = ATTRACTION_AGENT_PROMPT.format(days=2, min_pois=4, max_pois=6, max_tool_calls=11)
+        assert "禁止把不在 must_visit 里的景点标为 must" in s
+
+    def test_prompt_no_core_attraction_must(self):
+        """旧规则"核心景点 must"已删除"""
+        from app.agents.prompts import ATTRACTION_AGENT_PROMPT
+        s = ATTRACTION_AGENT_PROMPT.format(days=2, min_pois=4, max_pois=6, max_tool_calls=11)
+        assert "核心景点 must" not in s

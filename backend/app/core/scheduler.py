@@ -109,6 +109,25 @@ def _priority_weight(priority: str) -> int:
     return {"must": 0, "nice": 1, "optional": 2}.get(priority, 2)
 
 
+def _is_user_must_visit(poi: dict, must_visit: Optional[List[str]]) -> bool:
+    """POI 是否命中用户显式指定的 must_visit（名称/ID 包含匹配）
+
+    must_visit 项是用户输入的短名（"中山陵"），POI name 是高德全称（"中山陵景区"），
+    用双向包含匹配。LLM 自标的 must 不在此列——用于排程冲突时优先保用户项（第五阶段）。
+    """
+    name = str(poi.get("name") or "")
+    pid = str(poi.get("id") or "")
+    for mv in (must_visit or []):
+        if not isinstance(mv, str):
+            continue
+        mv = mv.strip()
+        if not mv:
+            continue
+        if mv in name or (name and name in mv) or mv in pid:
+            return True
+    return False
+
+
 def sort_pois_for_planning(pois: List[dict]) -> List[dict]:
     """排序：must > nice > optional，同优先级按 area，再按 confidence 降序"""
     return sorted(
@@ -278,6 +297,12 @@ async def build_itinerary_from_data(
     days: List[dict] = []
     remaining_must = [p for p in regular_pois if p.get("priority") == "must"]
 
+    # 排程分级（第五阶段）：用户显式 must_visit 命中的 POI 排最前，LLM 自标的 must 靠后。
+    # 背景：prompt 旧规则允许 LLM 把偏好景点标 must，4 个 must 超 relaxed 容量时
+    # 用户指定的夫子庙被 LLM 推荐的博物院挤掉。稳定排序保持原 area/confidence 次序。
+    user_must_visit = trip_meta.get("must_visit") or []
+    remaining_must.sort(key=lambda p: 0 if _is_user_must_visit(p, user_must_visit) else 1)
+
     # 全天项目各自单独成天
     for poi in full_day_pois:
         if len(days) >= trip_meta.get("days", 0):
@@ -323,9 +348,15 @@ async def build_itinerary_from_data(
         days.append(_finalize_day(day_index + 1, ctx))
         day_index += 1
 
-    # 仍有 must 未排：警告
+    # 仍有 must 未排：警告（第五阶段分级：用户指定必去 vs LLM 自标）
     for m in remaining_must:
-        warnings.append(f"必去项 {m.get('id')} 因天数或 pace 上限未排入")
+        if _is_user_must_visit(m, user_must_visit):
+            warnings.append(
+                f"用户指定的必去景点 {m.get('name') or m.get('id')} 因天数或 pace 上限未排入，"
+                f"建议减少其他景点或放宽节奏"
+            )
+        else:
+            warnings.append(f"必去项 {m.get('id')} 因天数或 pace 上限未排入")
 
     # 空天告警（第零期续作新增）
     # 2 天行程只排出 1 天内容时，Day2 是空的 [{"day":2,"time_blocks":[]}]，

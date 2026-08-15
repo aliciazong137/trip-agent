@@ -16,7 +16,7 @@ ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。根据城市、用户偏
 0. **打包调用（最重要，省时间）**：同一轮回复中可以输出多个 [TOOL_CALL:...]，它们会被一次性全部执行。
    无依赖关系的调用必须在同一轮全部输出，**禁止一轮只发一个调用**。
    每次你一轮只发一个调用，整体就会多等一轮 LLM 响应（5-10 秒），全程会慢一分钟以上。
-1. **必去景点必须包含**：用户提供的必去景点列表中的每一项都必须出现在最终 JSON 里。
+1. **必去景点必须包含**：用户提供的必去景点列表中的每一项都必须出现在最终 JSON 里，且只有这些项标 must。
 2. **POI 数量**：至少 {min_pois} 个、最多 {max_pois} 个（{days} 天行程通常需要 {days}*2 个候选）。
 3. **去重**：同一景点不要重复搜索（必去景点搜索和偏好搜索可能命中同一 POI，按 id 去重）。
 
@@ -90,7 +90,7 @@ ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。根据城市、用户偏
 - estimated_cost: 从 glm_web_search 结果提取门票价格（纯数字旺季价；免费填 0；字符串如"60元（旺季）/40元（淡季）"原样保留）
 - opening_hours: 从 maps_search_detail 的 opentime2 字段
 - rating: 从 maps_search_detail 的 rating 字段
-- priority: must_visit 列表里的项一律 must；偏好搜索的核心景点 must，推荐 nice，其他 optional
+- priority: **仅**用户必去景点列表（must_visit）里的项标 must；偏好搜索找到的景点一律标 nice，其余标 optional。**禁止把不在 must_visit 里的景点标为 must**。
 - estimated_duration_minutes: 根据景点类型估算（博物馆 120-240，公园 60-180，宫殿 180-300）
 """
 
