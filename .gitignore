@@ -28,3 +28,6 @@ data/memory.db
 # HelloAgents MemoryTool 实测产物
 backend/memory_data/
 data/memory/
+
+# WorkBuddy 会话/记忆数据（不入库）
+.workbuddy/
