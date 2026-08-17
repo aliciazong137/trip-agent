@@ -1,74 +1,64 @@
 # Trip Agent
 
-旅行规划 Agent — P0 脚手架。
+旅行规划 Agent — 自然语言 → 可执行行程。
 
 ## 技术栈
 
-- TypeScript + Node.js 22
-- Hono（API）
-- Ajv（Schema 校验）
-- Vitest（测试）
+- Python 3.13 + FastAPI
+- HelloAgents 框架 + LangGraph
+- GLM-5.2（智谱，OpenAI 兼容）
+- ChromaDB + sentence-transformers（RAG）
+- MCP（工具调用）
 
 ## 快速开始
 
 ```bash
-cd ~/Desktop/trip_agent
-npm install
-npm run build
-npm test
-npm run dev
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # 填入 LLM_API_KEY / AMAP_API_KEY
+uvicorn app.main:app --reload
 ```
 
-服务默认：`http://localhost:3000`
+- API：http://localhost:8000（Swagger：/docs）
+- 前端 Vue3：localhost:5173（CORS 已放行，前端不在本仓库）
 
 ## API
 
-### `POST /plan`
+### `POST /api/trip/plan-nl`（自然语言，主入口）
 
 ```bash
-curl -s http://localhost:3000/plan \
+curl -s http://localhost:8000/api/trip/plan-nl \
   -H 'Content-Type: application/json' \
-  -d '{
-    "guideText": "第一天道顿堀，第二天环球影城",
-    "tripMeta": {
-      "city": "osaka",
-      "days": 2,
-      "startDate": "2026-09-01",
-      "budget": { "currency": "JPY", "amount": 80000 },
-      "pace": "normal",
-      "mustVisit": ["USJ"],
-      "avoid": []
-    }
-  }'
+  -d '{"query": "我想去南京玩2天"}'
 ```
 
-### `POST /revise-day`
+字段缺失时返回 `needs_clarification` + `session_id`，用户补充后带同一 `session_id` 续接。
+
+### `POST /api/trip/plan`（结构化）
 
 ```bash
-curl -s http://localhost:3000/revise-day \
+curl -s http://localhost:8000/api/trip/plan \
   -H 'Content-Type: application/json' \
-  -d '{
-    "sessionId": "sess_xxx",
-    "day": 2,
-    "instruction": "Day2 想轻松一点",
-    "lockedItemIds": []
-  }'
+  -d '{"trip_meta": {"city": "南京", "days": 2, "pace": "normal", "must_visit": [], "avoid": []}}'
 ```
 
-### `GET /session/:id`
+### 其他
+
+- `GET /api/trip/session/{session_id}`：会话状态
+- `GET /api/rag/search?q=南京+中山陵&top_k=5&city=南京`：RAG 检索
+- `GET /api/memory/{user_id}/search?q=...`：Memory 检索
+- `GET /health`：健康检查
+
+## 测试
 
 ```bash
-curl -s http://localhost:3000/session/sess_xxx
+cd backend && pytest
 ```
 
-## P0 状态
+## 数据
 
-- [x] 目录骨架
-- [x] 5 个 JSON Schema
-- [x] 大阪区域矩阵 + POI 白名单样本
-- [x] 3 个最小 API（mock 数据）
-- [ ] B 阶段攻略解析（P2）
-- [ ] 真实排程工具（P1）
-- [ ] Verifier 完整规则（P1-P3）
+- `data/guides/`：攻略 markdown（南京、北京），RAG 数据源
+- `data/chroma/`：向量库（本地生成，.gitignore 忽略）
 
-详细设计见上级目录 `tools_aigc/AGENT_PLAN.md` 或复制到本项目的 `docs/ARCHITECTURE.md`。
+详见 `AGENTS.md`（目录职责）与 `LOOP.md`（规划流程）。
