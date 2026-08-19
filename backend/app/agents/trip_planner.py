@@ -187,16 +187,11 @@ class TripPlannerAgent:
             f"[TOOL_CALL:amap_maps_text_search:keywords={preferences},city={city}]"
         )
         weather_query = f"请查询 {city} 的天气信息\n[TOOL_CALL:amap_maps_weather:city={city}]"
-        hotel_query = (
-            f"请搜索 {city} 的 {accommodation} 酒店\n"
-            f"[TOOL_CALL:amap_maps_text_search:keywords=酒店,city={city}]"
-        )
-
-        # 2. 串行调 3 个研究 Agent（第十三章原版做法，MCP server 单进程串行处理）
+        # 2. 串行调景点+天气研究 Agent（酒店搜索移到排程后，结合行程区域）
         #    第二阶段：整个研究阶段包在一个线程的一个 loop 里，MCP 进程只启动一次。
-        attraction_response, weather_response, hotel_response = await asyncio.to_thread(
+        attraction_response, weather_response = await asyncio.to_thread(
             self._research_phase_sync,
-            attraction_query, weather_query, hotel_query, max_tool_calls,
+            attraction_query, weather_query, max_tool_calls,
         )
 
         # 3. 确定性排程（Python 直接调，不经过 LLM）
@@ -246,6 +241,9 @@ class TripPlannerAgent:
         # 3.5 RAG 检索攻略知识（第三期：用 city + preferences 个性化检索）
         knowledge_context = await self._retrieve_knowledge(city, trip_meta)
 
+        # 3.6 酒店搜索（排程后，结合行程 area_cluster 搜附近酒店）
+        hotel_response = await self._hotel_search_phase(city, trip_meta, itinerary)
+
         # 4. PlannerAgent（SimpleAgent，一次 LLM 调用）整合所有结果
         planner_query = self._build_planner_query(
             trip_meta, attraction_response, weather_response, hotel_response, session_id, itinerary, knowledge_context
@@ -270,9 +268,26 @@ class TripPlannerAgent:
         }
         trip_plan["session_id"] = session_id
 
-        # 用确定性排程的 days 覆盖 LLM 生成的 days（确定性优先）
+        # 确定性 days 优先结构（time_blocks/area_cluster/cost/minutes），
+        # 但 merge LLM 填的软字段（hotel/accommodation/description/meals/transportation）
         if itinerary.get("days"):
-            trip_plan["days"] = itinerary["days"]
+            llm_days = trip_plan.get("days", []) or []
+            det_days = itinerary["days"]
+            for det_d in det_days:
+                day_num = det_d.get("day")
+                llm_d = next((d for d in llm_days if d.get("day") == day_num), {})
+                for soft in ("hotel", "accommodation", "description", "transportation", "meals"):
+                    if llm_d.get(soft):
+                        det_d[soft] = llm_d[soft]
+            trip_plan["days"] = det_days
+            # 酒店兜底：PlannerAgent 可能没填 hotel，从 hotel_response parse 按区域匹配填入
+            hotels = self._extract_hotels_from_response(hotel_response)
+            if hotels:
+                for d in trip_plan["days"]:
+                    if not d.get("hotel"):
+                        chosen = self._pick_hotel_for_day(hotels, d.get("area_cluster", []))
+                        if chosen:
+                            d["hotel"] = chosen
 
         # 确定性 budget 兜底：total_attractions 用确定性门票总和（不信任 LLM 估算的门票）
         deterministic_attractions_cost = sum(d.get("estimated_total_cost", 0) for d in itinerary.get("days", []))
@@ -340,7 +355,7 @@ class TripPlannerAgent:
         return []
 
     def _research_phase_sync(self, attraction_query: str, weather_query: str,
-                             hotel_query: str, max_tool_calls: int):
+                             max_tool_calls: int):
         """
         整个研究阶段跑在一个线程的一个 loop 里，MCP 进程只启动一次（第二阶段优化）
 
@@ -371,10 +386,80 @@ class TripPlannerAgent:
                 attraction_query, max_tool_iterations=max_tool_calls, **think_kwargs
             )
             weather_response = self.weather_agent.run(weather_query, **think_kwargs)
-            hotel_response = self.hotel_agent.run(hotel_query, **think_kwargs)
-            return attraction_response, weather_response, hotel_response
+            return attraction_response, weather_response
         finally:
             self.amap_tool.close_shared()
+
+    async def _hotel_search_phase(self, city: str, trip_meta: dict, itinerary: dict) -> str:
+        """排程后搜酒店，结合行程主区域（area_cluster）搜附近酒店"""
+        areas = self._extract_main_areas(itinerary)
+        area_hint = areas[0] if areas else city
+        accommodation = trip_meta.get("accommodation") or "经济型"
+        hotel_query = (
+            f"请搜索 {city} {area_hint} 附近的 {accommodation} 酒店（结合行程区域推荐）\n"
+            f"[TOOL_CALL:amap_maps_text_search:keywords=酒店,city={city}]"
+        )
+        think_kwargs = (
+            {"extra_body": {"thinking": {"type": "disabled"}}}
+            if settings.llm_thinking_disabled else {}
+        )
+        def _run():
+            self.amap_tool.open_shared()
+            try:
+                return self.hotel_agent.run(hotel_query, max_tool_iterations=5, **think_kwargs)
+            finally:
+                self.amap_tool.close_shared()
+        try:
+            return await asyncio.to_thread(_run)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("hotel search phase failed: %s", e)
+            return ""
+
+    def _extract_main_areas(self, itinerary: dict) -> list:
+        """从行程 area_cluster 提取主区域（去重保序，前3个）"""
+        areas = []
+        for d in (itinerary or {}).get("days", []):
+            areas.extend(d.get("area_cluster", []))
+        seen = set()
+        uniq = [a for a in areas if not (a in seen or seen.add(a))]
+        return uniq[:3]
+
+    def _extract_hotels_from_response(self, response: str) -> list:
+        """从酒店 Agent 响应里提取酒店列表（JSON 数组）"""
+        import json as _json
+        import re as _re
+        if not response:
+            return []
+        m = _re.search(r"```(?:json)?\s*(\[.*?\])\s*```", response, _re.DOTALL)
+        if m:
+            try:
+                arr = _json.loads(m.group(1))
+                if isinstance(arr, list):
+                    return arr
+            except _json.JSONDecodeError:
+                pass
+        start = response.find("[")
+        end = response.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            try:
+                arr = _json.loads(response[start:end+1])
+                if isinstance(arr, list):
+                    return arr
+            except _json.JSONDecodeError:
+                pass
+        return []
+
+    def _pick_hotel_for_day(self, hotels: list, areas: list) -> Optional[dict]:
+        """按当天 area_cluster 匹配酒店，无匹配取第一个"""
+        if not hotels:
+            return None
+        for area in areas:
+            for h in hotels:
+                hotel_area = h.get("area", "") or ""
+                if area and area in hotel_area:
+                    return h
+        return hotels[0] if hotels else None
 
     async def _fallback_pois_from_must_visit(self, city: str, must_visit: list) -> list:
         """
@@ -520,6 +605,11 @@ class TripPlannerAgent:
             f"**攻略知识（RAG 检索，供参考补充建议）:**\n{knowledge_context}"
             if knowledge_context else ""
         )
+        hotel_short = (hotel_response or "")[:600]
+        hotel_section = (
+            f"**酒店搜索结果（高德 MCP，根据行程区域搜的）:**\n{hotel_short}"
+            if hotel_short else ""
+        )
 
         itinerary_summary = "无确定性排程结果"
         total_attractions_cost = 0
@@ -535,6 +625,8 @@ class TripPlannerAgent:
         return f"""为 {trip_meta.get('city', '')} 的 {trip_meta.get('days', 3)} 日旅行计划填充元信息。
 
 {knowledge_section}
+
+{hotel_section}
 
 **天气信息（来自高德 MCP）:**
 {weather_short}

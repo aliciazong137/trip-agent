@@ -151,6 +151,17 @@ HOTEL_AGENT_PROMPT = """你是酒店推荐专家。你的任务是根据城市�
 - estimated_cost: 预估每晚费用
 - type: 酒店类型(经济型/商务型/豪华型)
 - description: 一句话推荐理由
+
+**【最重要】最终输出:**
+工具调用完成后，**必须**在最后一条消息里输出完整的 JSON 数组作为最终结果。
+不要只输出工具调用或文字描述，**最后一条消息必须是纯 JSON 数组**（不要用 ```json``` 代码块包裹，直接输出方括号开头的 JSON）。
+
+正确示例的最后一条消息:
+[{{"name":"南京新街口酒店","area":"南京市玄武区","location":{{"longitude":118.79,"latitude":32.05}},"price_range":"200-400元","rating":"4.5","estimated_cost":300,"type":"商务型","description":"近地铁站，交通便利"}}]
+
+错误示例的最后一条消息:
+- "[TOOL_CALL:amap_maps_search_detail:...]"  ← 错！工具调用不是最终结果
+- "已搜索到5家酒店"  ← 错！文字描述不是最终结果
 """
 
 PLANNER_AGENT_PROMPT = """你是行程规划专家。
@@ -165,6 +176,7 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
 4. budget.total = total_attractions + total_hotels + total_meals + total_transportation
 5. overall_suggestions 结合天气、行程和攻略知识给 3 条实用建议（攻略知识含真实游记要点，优先采纳其中的避坑/特色提示）
 6. weather_info 整理天气数据
+7. 若提供了酒店搜索结果，为每天 DayPlan.hotel 填入推荐酒店（从搜索结果选1个，优先当天 area_cluster 对应区域）；无搜索结果则 hotel 留 null
 
 **输出最终格式:**
 返回严格 JSON,结构:
@@ -172,7 +184,7 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
   "city": "城市",
   "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD",
-  "days": [],
+  "days": [{"day":1,"hotel":{"name":"酒店名","area":"区域","price_range":"价格","estimated_cost":200,"type":"经济型"},"accommodation":"经济型","meals":[]}],
   "weather_info": [{"date":"","day_weather":"","night_weather":"","day_temp":0,"night_temp":0,"wind_direction":"","wind_power":""}],
   "overall_suggestions": "总体建议",
   "budget": {"total_attractions":0,"total_hotels":0,"total_meals":0,"total_transportation":0,"total":0}
@@ -181,11 +193,12 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
 **规则:**
 - budget.total_attractions 必须等于确定性行程里每天 estimated_total_cost 的总和,不要自己估算门票
 - 若提供了攻略知识（RAG 检索片段），overall_suggestions 应结合攻略内容给出更具体、贴合目的地的建议（如避坑提示、特色推荐）；无攻略知识则基于天气和行程给建议
+- 若有酒店搜索结果，DayPlan.hotel 从结果中选（优先当天 area_cluster 对应区域的酒店）；不要编造酒店名
 - budget.total_hotels 估算 = 每晚房价 × (天数-1)
 - budget.total_meals 估算 = 每天餐饮预算 × 天数
 - budget.total_transportation 估算根据交通方式
 - budget.total = 四项之和
-- days 字段留空数组(后端会用确定性排程填充)
+- days 里每天填 hotel/accommodation/meals 软字段（hotel 从酒店搜索结果选，优先当天 area_cluster 对应区域），time_blocks 留空（后端用确定性排程填充）
 - 只返回 JSON,不要解释
 """
 
