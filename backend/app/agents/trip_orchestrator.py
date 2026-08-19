@@ -84,8 +84,9 @@ class TripPlanOrchestrator:
         """
         # 1. Memory 检索（第四期新增）
         # 仅作为偏好参考，不能用于补全 city/days/travelers/budget 等本次事实。
+        # 优化：用户无任何历史记忆时跳过检索，避免无谓加载 embedding（省 457MB/9s）
         memory_context = ""
-        if settings.memory_enabled:
+        if settings.memory_enabled and self._has_any_memory(user_id or "default_user"):
             try:
                 memory_context = await asyncio.to_thread(
                     self.memory.get_context_for_query, user_id or "default_user", query, 3
@@ -273,13 +274,24 @@ class TripPlanOrchestrator:
             warnings=result.get("warnings", []),
         )
 
+    def _has_any_memory(self, user_id: str) -> bool:
+        """轻量检查用户是否有任何持久化记忆（不加载 embedding，避免无谓 457MB）"""
+        try:
+            stats = self.memory.stats(user_id)
+            return stats.get("total_persisted", 0) > 0
+        except Exception:
+            return False
+
     def _recall_preferences(self, user_id: str) -> Optional[str]:
         """
         memory 个性化：从 semantic memory 检索历史偏好（event_type=preference）
 
         规划成功时 compressor 会把 preferences 存成 semantic memory（metadata.event_type=preference）。
         这里检索并去重，返回逗号拼接的偏好串；无则 None。
+        无任何记忆时直接返回 None，避免触发 embedding 加载（省 457MB）。
         """
+        if not self._has_any_memory(user_id):
+            return None
         try:
             results = self.memory.search(
                 user_id, "用户偏好", limit=5, memory_types=["semantic"]
@@ -300,6 +312,8 @@ class TripPlanOrchestrator:
 
     def _recall_transportation(self, user_id: str) -> Optional[str]:
         """memory 个性化：从 semantic memory 检索历史交通方式（event_type=transportation）"""
+        if not self._has_any_memory(user_id):
+            return None
         try:
             results = self.memory.search(
                 user_id, "交通方式", limit=3, memory_types=["semantic"]
