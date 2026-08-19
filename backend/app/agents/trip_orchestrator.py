@@ -117,6 +117,29 @@ class TripPlanOrchestrator:
         # 2. 意图识别（只从 query 抽取；memory_context 只作偏好提示，不补全事实）
         intent = await self.intent_recognizer.recognize(merged_query, memory_context)
 
+        # 2.1 memory 个性化：preferences 缺失时从历史偏好补默认
+        # 仅对 preferences/transportation 这类稳定偏好字段放宽"memory 不补全"约束；
+        # city/days/budget 等本次事实仍严格来自用户原话。
+        if intent.trip_meta and not intent.trip_meta.get("preferences"):
+            recalled = self._recall_preferences(user_id or "default_user")
+            if recalled:
+                intent.trip_meta["preferences"] = recalled
+                # 移除 intent 里"未提及偏好/preferences默认空"的冗余 assumption，再加来源说明
+                intent.assumptions = [a for a in intent.assumptions if "preferences" not in a.lower() and "偏好" not in a]
+                intent.assumptions.append(f"未明说偏好，根据历史记忆设为 {recalled}")
+
+        # 2.2 transportation 个性化 + 软澄清：缺失时查 memory，无历史则首次问一次
+        transportation_clarify = False
+        if intent.trip_meta and not intent.trip_meta.get("transportation"):
+            recalled_transport = self._recall_transportation(user_id or "default_user")
+            if recalled_transport:
+                intent.trip_meta["transportation"] = recalled_transport
+                # 移除 intent 里"未提供交通方式"的冗余 assumption，再加来源说明
+                intent.assumptions = [a for a in intent.assumptions if "交通方式" not in a]
+                intent.assumptions.append(f"未明说交通方式，根据历史记忆设为 {recalled_transport}")
+            else:
+                transportation_clarify = True  # 无历史，首次问一次
+
         # 3. 非旅行规划请求
         if intent.intent == "unsupported":
             return NlTripPlanResponse(
@@ -160,6 +183,33 @@ class TripPlanOrchestrator:
                 clarification_question=question,
                 missing_fields=missing,
                 invalid_fields=invalid,
+                assumptions=intent.assumptions,
+            )
+
+        # 5.1 transportation 软澄清：字段齐全但首次未提供交通方式
+        elif transportation_clarify:
+            if not session_id:
+                session_id = new_session_id()
+                await session_store.create_session(
+                    session_id,
+                    intent.trip_meta or {"city": "", "days": 1},
+                    "",
+                )
+            question = "您本次出行选择什么交通方式？（如：自驾 / 公共交通 / 步行 / 高铁）"
+            await save_pending_clarification(
+                session_id=session_id,
+                original_query=query,
+                missing_fields=["transportation"],
+                invalid_fields=[],
+                partial_trip_meta=intent.trip_meta or {},
+            )
+            return NlTripPlanResponse(
+                status="needs_clarification",
+                session_id=session_id,
+                trip_meta=None,
+                clarification_question=question,
+                missing_fields=["transportation"],
+                invalid_fields=[],
                 assumptions=intent.assumptions,
             )
 
@@ -223,6 +273,45 @@ class TripPlanOrchestrator:
             warnings=result.get("warnings", []),
         )
 
+    def _recall_preferences(self, user_id: str) -> Optional[str]:
+        """
+        memory 个性化：从 semantic memory 检索历史偏好（event_type=preference）
+
+        规划成功时 compressor 会把 preferences 存成 semantic memory（metadata.event_type=preference）。
+        这里检索并去重，返回逗号拼接的偏好串；无则 None。
+        """
+        try:
+            results = self.memory.search(
+                user_id, "用户偏好", limit=5, memory_types=["semantic"]
+            )
+            prefs: list[str] = []
+            for r in results:
+                meta = r.item.metadata or {}
+                if meta.get("event_type") == "preference" and meta.get("preference"):
+                    prefs.append(meta["preference"])
+            if not prefs:
+                return None
+            seen = set()
+            uniq = [p for p in prefs if not (p in seen or seen.add(p))]
+            return ", ".join(uniq)
+        except Exception as e:
+            logger.warning("recall preferences failed: %s", e)
+            return None
+
+    def _recall_transportation(self, user_id: str) -> Optional[str]:
+        """memory 个性化：从 semantic memory 检索历史交通方式（event_type=transportation）"""
+        try:
+            results = self.memory.search(
+                user_id, "交通方式", limit=3, memory_types=["semantic"]
+            )
+            for r in results:
+                meta = r.item.metadata or {}
+                if meta.get("event_type") == "transportation" and meta.get("transportation"):
+                    return meta["transportation"]
+        except Exception as e:
+            logger.warning("recall transportation failed: %s", e)
+        return None
+
     def _schedule_memory_recording(self, merged_query: str, trip_meta, trip_plan_data: dict,
                                    warnings: list, user_id: str, session_id: str) -> asyncio.Task:
         """后台调度 memory 记录，返回 task（测试可 await）"""
@@ -256,5 +345,9 @@ class TripPlanOrchestrator:
             eid = self.memory.add_memory(memory_text, user_id=user_id, memory_type="episodic", importance=compression.importance, metadata=metadata)
             for pref in compression.preferences:
                 self.memory.add_memory(f"用户偏好：{pref}", user_id=user_id, memory_type="semantic", importance=min(1.0, compression.importance), metadata={"event_type": "preference", "preference": pref, "source_memory_id": eid})
+            # 存交通方式（如有，供下次 memory 个性化复用）
+            transport = getattr(trip_meta, "transportation", None)
+            if transport:
+                self.memory.add_memory(f"用户偏好交通方式：{transport}", user_id=user_id, memory_type="semantic", importance=min(1.0, compression.importance), metadata={"event_type": "transportation", "transportation": transport, "source_memory_id": eid})
         except Exception as e:
             logger.warning("Memory 后台记录失败（不影响规划）: %s", e)

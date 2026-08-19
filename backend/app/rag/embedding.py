@@ -44,6 +44,7 @@ def get_embedder():
     _embedder = SentenceTransformer(
         model_path_or_name,
         device=settings.rag_device,
+        local_files_only=True,  # 离线模式：用本地缓存，避免联网经代理 502
     )
     _embedder_model_name = model_name
     logger.info("Embedding 模型已加载: %s", model_name)

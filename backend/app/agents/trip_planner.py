@@ -243,9 +243,12 @@ class TripPlannerAgent:
         else:
             itinerary = {"session_id": session_id, "city": city, "version": 1, "days": []}
 
+        # 3.5 RAG 检索攻略知识（第三期：用 city + preferences 个性化检索）
+        knowledge_context = await self._retrieve_knowledge(city, trip_meta)
+
         # 4. PlannerAgent（SimpleAgent，一次 LLM 调用）整合所有结果
         planner_query = self._build_planner_query(
-            trip_meta, attraction_response, weather_response, hotel_response, session_id, itinerary
+            trip_meta, attraction_response, weather_response, hotel_response, session_id, itinerary, knowledge_context
         )
         # PlannerAgent 纯 JSON 整合（无工具调用），同样关思考提速
         planner_kwargs = (
@@ -478,6 +481,29 @@ class TripPlannerAgent:
             "description": f"必去景点（兜底）：{spot}",
         }
 
+    async def _retrieve_knowledge(self, city: str, trip_meta: dict) -> str:
+        """
+        第三期：RAG 检索攻略知识，用 city + preferences 个性化检索
+
+        返回拼接的攻略片段文本；知识库为空或检索失败返回空串（不阻断主流程）
+        """
+        try:
+            from app.rag import retriever
+            preferences = trip_meta.get("preferences", "") or ""
+            rag_query = f"{city} {preferences}".strip()
+            chunks = await retriever.search(rag_query, top_k=3, city=city)
+            if not chunks:
+                return ""
+            parts = []
+            for c in chunks:
+                title = c.title or c.source or "攻略"
+                parts.append(f"【{title}】\n{c.content[:400]}")
+            return "\n\n".join(parts)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("RAG retrieve failed: %s", e)
+            return ""
+
     def _build_planner_query(
         self,
         trip_meta: dict,
@@ -486,9 +512,14 @@ class TripPlannerAgent:
         hotel_response: str,
         session_id: str,
         itinerary: dict = None,
+        knowledge_context: str = "",
     ) -> str:
         # 极简 query：只传天气 + 确定性行程摘要（含每天门票），避免 query 过长导致 GLM 重试
         weather_short = (weather_response or "")[:800]
+        knowledge_section = (
+            f"**攻略知识（RAG 检索，供参考补充建议）:**\n{knowledge_context}"
+            if knowledge_context else ""
+        )
 
         itinerary_summary = "无确定性排程结果"
         total_attractions_cost = 0
@@ -502,6 +533,8 @@ class TripPlannerAgent:
             itinerary_summary = "\n".join(days_brief)
 
         return f"""为 {trip_meta.get('city', '')} 的 {trip_meta.get('days', 3)} 日旅行计划填充元信息。
+
+{knowledge_section}
 
 **天气信息（来自高德 MCP）:**
 {weather_short}

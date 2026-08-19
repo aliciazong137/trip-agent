@@ -45,9 +45,22 @@ INTENT_RECOGNIZER_PROMPT = """你是旅行需求解析助手。从用户 query �
 - "预算5000左右" → budget.amount=5000, scope="unknown", approximate=true
 - "学生党"/"穷游" 等模糊描述 → 不要推算预算，放 missing_fields
 - "去北京"/"想去南京" → city=对应城市
-- "历史文化"/"博物馆"/"美食" → preferences=对应词
+- preferences（偏好）从用户原话或上下文推断，常见类别：
+  - "历史文化/博物馆/古迹/文物/遗址" → preferences="历史文化"
+  - "自然/山水/风景/公园/湖泊/登山" → preferences="自然风光"
+  - "美食/小吃/探店/吃货/夜市" → preferences="美食探店"
+  - "亲子/带娃/儿童/家庭/一大一小" → preferences="亲子"
+  - "购物/逛街/商场/免税/血拼" → preferences="购物"
+  - "夜生活/酒吧/夜景" → preferences="夜生活"
+  - "文艺/艺术/展览/拍照/打卡/网红" → preferences="文艺打卡"
+  - 多个偏好用逗号拼接，如 preferences="历史文化,美食探店"
+  - 上下文暗示也要推断（"带娃"→亲子、"文艺青年"→文艺打卡、"特种兵"除影响 pace 外也可记偏好）
 - "必去故宫" → must_visit=["故宫"]
-- pace（节奏）默认 normal（用户没说也用 normal，放 assumptions 不算 missing）
+- pace（节奏）你**必须**映射到 relaxed/normal/packed 三者之一，禁止输出其他值：
+  - 快节奏（特种兵/极限/紧凑/赶/打卡多/急/j人 等）→ packed
+  - 慢节奏（轻松/休闲/慢/度假/p人 等）→ relaxed
+  - 中性/未提及/拿不准 → normal（放 assumptions 说明，如"未明确节奏，默认 normal"）
+  - 俚语、打错字、网络梗也必须归一化到这三者之一，不要原样输出或自创新词
 - preferences 默认空（用户没说也放 assumptions）
 
 **关于 assumptions：**

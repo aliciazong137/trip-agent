@@ -159,11 +159,11 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
 你不直接规划行程顺序，行程顺序由确定性排程算法决定，你只负责填充元信息。
 
 **工作流程:**
-1. 收到确定性行程摘要（含每天 estimated_total_cost = 门票总和）+ 天气信息 + 用户需求
+1. 收到确定性行程摘要（含每天 estimated_total_cost = 门票总和）+ 天气信息 + 用户需求 + 攻略知识（RAG 检索，如有）
 2. budget.total_attractions 直接用确定性行程的门票总和（不要自己估算门票）
 3. budget.total_hotels / total_meals / total_transportation 根据用户住宿类型/天数/交通方式估算
 4. budget.total = total_attractions + total_hotels + total_meals + total_transportation
-5. overall_suggestions 结合天气和行程给 3 条实用建议
+5. overall_suggestions 结合天气、行程和攻略知识给 3 条实用建议（攻略知识含真实游记要点，优先采纳其中的避坑/特色提示）
 6. weather_info 整理天气数据
 
 **输出最终格式:**
@@ -180,6 +180,7 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
 
 **规则:**
 - budget.total_attractions 必须等于确定性行程里每天 estimated_total_cost 的总和,不要自己估算门票
+- 若提供了攻略知识（RAG 检索片段），overall_suggestions 应结合攻略内容给出更具体、贴合目的地的建议（如避坑提示、特色推荐）；无攻略知识则基于天气和行程给建议
 - budget.total_hotels 估算 = 每晚房价 × (天数-1)
 - budget.total_meals 估算 = 每天餐饮预算 × 天数
 - budget.total_transportation 估算根据交通方式
