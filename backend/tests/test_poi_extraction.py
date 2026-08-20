@@ -182,7 +182,7 @@ class TestOrchestratorPoiEmptyDegradation:
         orch.intent_recognizer = MagicMock()
         orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
             intent="trip_planning",
-            trip_meta={"city": "南京", "days": 2, "pace": "normal"},
+            trip_meta={"city": "南京", "days": 2, "pace": "normal", "transportation": "公共交通"},
             missing_fields=[],
         ))
         orch._planner = MagicMock()
@@ -210,7 +210,7 @@ class TestOrchestratorPoiEmptyDegradation:
         orch.intent_recognizer = MagicMock()
         orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
             intent="trip_planning",
-            trip_meta={"city": "南京", "days": 2, "pace": "normal"},
+            trip_meta={"city": "南京", "days": 2, "pace": "normal", "transportation": "公共交通"},
             missing_fields=[],
         ))
         orch._planner = MagicMock()
@@ -235,7 +235,7 @@ class TestOrchestratorPoiEmptyDegradation:
         orch.intent_recognizer = MagicMock()
         orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
             intent="trip_planning",
-            trip_meta={"city": "南京", "days": 2, "pace": "normal"},
+            trip_meta={"city": "南京", "days": 2, "pace": "normal", "transportation": "公共交通"},
             missing_fields=[],
         ))
         orch._planner = MagicMock()

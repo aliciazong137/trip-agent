@@ -396,7 +396,7 @@ class TestOrchestratorFlow:
         orch.intent_recognizer = MagicMock()
         orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
             intent="trip_planning",
-            trip_meta={"city": "南京", "days": 2, "pace": "normal"},
+            trip_meta={"city": "南京", "days": 2, "pace": "normal", "transportation": "公共交通"},
             missing_fields=[],
             assumptions=["未提供交通方式"],
         ))
@@ -432,7 +432,7 @@ class TestOrchestratorFlow:
         orch.intent_recognizer = MagicMock()
         orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
             intent="trip_planning",
-            trip_meta={"city": "南京", "days": 2, "pace": "normal"},
+            trip_meta={"city": "南京", "days": 2, "pace": "normal", "transportation": "公共交通"},
             missing_fields=[],
             assumptions=[],
         ))
@@ -476,7 +476,7 @@ class TestOrchestratorFlow:
         orch.intent_recognizer = MagicMock()
         orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
             intent="trip_planning",
-            trip_meta={"city": "北京", "days": 2},
+            trip_meta={"city": "北京", "days": 2, "transportation": "公共交通"},
         ))
         orch._planner = MagicMock()
         orch._planner.plan_trip = AsyncMock(side_effect=RuntimeError("MCP 连接失败"))

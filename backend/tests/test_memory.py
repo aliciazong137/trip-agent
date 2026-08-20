@@ -108,7 +108,7 @@ async def test_orchestrator_records_memory_after_success(monkeypatch):
     orch.intent_recognizer = MagicMock()
     orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
         intent="trip_planning",
-        trip_meta={"city": "南京", "days": 2, "pace": "normal", "preferences": "历史文化"},
+        trip_meta={"city": "南京", "days": 2, "pace": "normal", "preferences": "历史文化", "transportation": "公共交通"},
         missing_fields=[],
     ))
     orch._planner = MagicMock()
@@ -138,7 +138,7 @@ async def test_memory_does_not_block_planning(monkeypatch):
     orch.intent_recognizer = MagicMock()
     orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
         intent="trip_planning",
-        trip_meta={"city": "南京", "days": 2, "pace": "normal"},
+        trip_meta={"city": "南京", "days": 2, "pace": "normal", "transportation": "公共交通"},
     ))
     orch._planner = MagicMock()
     orch._planner.plan_trip = AsyncMock(return_value={"session_id": "sess_memtest002", "trip_plan": {}, "warnings": []})
