@@ -159,10 +159,35 @@ class TestValidateTripMeta:
         tm, _, invalid = validate_trip_meta(raw)
         assert "budget" in invalid
 
-    def test_pace_invalid(self):
+    def test_pace_invalid_normalizes_alias(self):
+        """pace 口语别名归一化：fast → packed，不再判 invalid"""
         raw = {"city": "北京", "days": 2, "pace": "fast"}
         tm, _, invalid = validate_trip_meta(raw)
-        assert "pace" in invalid
+        assert tm is not None
+        assert invalid == []
+        assert tm.pace == "packed"
+
+    def test_pace_alias_chinese(self):
+        """中文口语别名归一化"""
+        cases = {
+            "特种兵": "packed", "极限": "packed", "紧凑": "packed",
+            "轻松": "relaxed", "休闲": "relaxed", "度假": "relaxed",
+            "一般": "normal", "常规": "normal",
+        }
+        for alias, expected in cases.items():
+            raw = {"city": "北京", "days": 2, "pace": alias}
+            tm, _, invalid = validate_trip_meta(raw)
+            assert tm is not None, f"{alias} 应归一化为 {expected}"
+            assert invalid == [], f"{alias} 不应判 invalid"
+            assert tm.pace == expected, f"{alias} 应归一化为 {expected}，实际 {tm.pace}"
+
+    def test_pace_unrecognizable_falls_back_normal(self):
+        """无法识别的 pace 兜底为 normal，不判 invalid"""
+        raw = {"city": "北京", "days": 2, "pace": "闪现"}
+        tm, _, invalid = validate_trip_meta(raw)
+        assert tm is not None
+        assert invalid == []
+        assert tm.pace == "normal"
 
     def test_pace_valid_enum(self):
         for pace in ["relaxed", "normal", "packed"]:

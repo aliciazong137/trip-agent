@@ -12,9 +12,12 @@
   missing_required：必填字段缺失（city, days）
   invalid：字段有值但值不合法（如 days=100）
 """
+import logging
 from typing import Tuple, List, Optional
 
 from app.models.schemas import TripMeta
+
+logger = logging.getLogger(__name__)
 
 
 # 必填字段（缺这些就进 needs_clarification）
@@ -22,6 +25,22 @@ REQUIRED_FIELDS = ["city", "days"]
 
 # 可选字段（有则校验合法性，缺失不算 missing）
 OPTIONAL_FIELDS = ["travelers", "budget", "pace", "preferences", "must_visit", "avoid"]
+
+# pace 口语别名归一化（LLM 可能返回 fast/特种兵 等非枚举值）
+PACE_ALIASES = {
+    "packed": "packed", "fast": "packed", "极速": "packed", "特种兵": "packed",
+    "极限": "packed", "紧凑": "packed", "赶": "packed", "打卡": "packed",
+    "relaxed": "relaxed", "slow": "relaxed", "轻松": "relaxed", "休闲": "relaxed",
+    "慢": "relaxed", "度假": "relaxed",
+    "normal": "normal", "一般": "normal", "常规": "normal",
+}
+
+
+def _normalize_pace(pace) -> Optional[str]:
+    """把 LLM 返回的 pace 归一化到 relaxed/normal/packed；无法识别返回 None"""
+    if not isinstance(pace, str):
+        return None
+    return PACE_ALIASES.get(pace.strip().lower())
 
 
 def validate_trip_meta(raw: dict) -> Tuple[Optional[TripMeta], List[str], List[str]]:
@@ -108,10 +127,15 @@ def validate_trip_meta(raw: dict) -> Tuple[Optional[TripMeta], List[str], List[s
                 except (TypeError, ValueError):
                     invalid.append("budget")
 
-    # 5. pace 可选，有则校验枚举
+    # 5. pace 可选，有则归一化到枚举；无法识别时兜底 normal（主防线是 LLM，这里只防偶发）
     pace = raw.get("pace")
-    if pace is not None and pace not in ("relaxed", "normal", "packed"):
-        invalid.append("pace")
+    if pace is not None:
+        norm = _normalize_pace(pace)
+        if norm is None:
+            logger.warning("pace=%r 无法识别，兜底为 normal", pace)
+            raw["pace"] = "normal"
+        else:
+            raw["pace"] = norm
 
     # 6. must_visit / avoid 可选，有则校验类型
     for field in ("must_visit", "avoid"):
@@ -197,6 +221,3 @@ def build_clarification_question(missing: List[str], invalid: List[str]) -> str:
     return "为了帮您生成准确的行程，请补充以下信息：\n" + "\n".join(f"- {p}" for p in parts)
 
 
-# 模块级 logger（避免循环导入）
-import logging
-logger = logging.getLogger(__name__)
