@@ -514,3 +514,100 @@ class TestFieldValidatorListToString:
         tm, _, _ = validate_trip_meta(raw)
         assert tm is not None
         assert tm.start_date == "20240101"
+
+
+# ─── 第七阶段：transportation 抽取规则修复 ──────────────────────────────────────
+
+class TestPromptTransportationExtraction:
+    """intent prompt 必须教 LLM 把交通方式填进 trip_meta.transportation，不是 assumptions"""
+
+    def test_prompt_has_transportation_extraction_rule(self):
+        from app.agents.intent_recognizer import INTENT_RECOGNIZER_PROMPT
+        assert "transportation（交通方式）" in INTENT_RECOGNIZER_PROMPT
+        assert 'transportation="公共交通"' in INTENT_RECOGNIZER_PROMPT
+        assert 'transportation="自驾"' in INTENT_RECOGNIZER_PROMPT
+
+    def test_prompt_no_misleading_assumption(self):
+        """示例里不应再误导 LLM 把交通方式默认放 assumptions"""
+        from app.agents.intent_recognizer import INTENT_RECOGNIZER_PROMPT
+        assert "未提供交通方式 transportation" not in INTENT_RECOGNIZER_PROMPT
+
+    def test_prompt_transportation_field_note(self):
+        """字段说明里明确 transportation 必须填入 trip_meta 不是 assumptions"""
+        from app.agents.intent_recognizer import INTENT_RECOGNIZER_PROMPT
+        assert "trip_meta.transportation（不是 assumptions）" in INTENT_RECOGNIZER_PROMPT
+
+
+class TestOrchestratorTransportationClarificationClosable:
+    """软澄清必须能被用户续接关闭（730eea8 引入 bug 的回归测试）"""
+
+    @pytest.mark.asyncio
+    async def test_transportation_in_query_skips_soft_clarify(self):
+        """query 含 transportation → 不触发软澄清 → 进 planner"""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.agents.trip_orchestrator import TripPlanOrchestrator
+        from app.models.schemas import IntentResult
+
+        orch = TripPlanOrchestrator()
+        orch.intent_recognizer = MagicMock()
+        orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
+            intent="trip_planning",
+            trip_meta={"city": "深圳", "days": 3, "pace": "packed",
+                       "transportation": "公共交通"},
+            missing_fields=[],
+        ))
+        orch._planner = MagicMock()
+        orch._planner.plan_trip = AsyncMock(return_value={
+            "session_id": "sess_sz", "status": "ok",
+            "trip_plan": {"city": "深圳", "start_date": "", "end_date": "", "days": []},
+            "warnings": [],
+        })
+
+        resp = await orch.plan_from_nl("我想去深圳玩3天 高能量 公共交通", user_id="u_sz")
+        assert resp.status == "ok", f"应进 planner 不触发软澄清，实际 {resp.status}"
+        orch._planner.plan_trip.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_transportation_soft_clarify_then_closable(self):
+        """首次无 transportation → 问一次；用户答后 → 进 planner（不再卡住）"""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.agents.trip_orchestrator import TripPlanOrchestrator
+        from app.models.schemas import IntentResult
+
+        # 第一次：无 transportation，无 memory 历史 → 软澄清
+        orch = TripPlanOrchestrator()
+        orch.intent_recognizer = MagicMock()
+        orch.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
+            intent="trip_planning",
+            trip_meta={"city": "深圳", "days": 3, "pace": "packed"},
+            missing_fields=[],
+        ))
+        # 无 memory 历史（_has_any_memory 返回 False）
+        orch._has_any_memory = MagicMock(return_value=False)
+
+        resp1 = await orch.plan_from_nl("我想去深圳玩3天 高能量", user_id="u_sz2")
+        assert resp1.status == "needs_clarification"
+        assert "transportation" in resp1.missing_fields
+        sid = resp1.session_id
+        assert sid is not None
+
+        # 第二次续接：用户答"公共交通"，intent 抽到 transportation → 进 planner
+        orch2 = TripPlanOrchestrator()
+        orch2.intent_recognizer = MagicMock()
+        orch2.intent_recognizer.recognize = AsyncMock(return_value=IntentResult(
+            intent="trip_planning",
+            trip_meta={"city": "深圳", "days": 3, "pace": "packed",
+                       "transportation": "公共交通"},
+            missing_fields=[],
+        ))
+        orch2._has_any_memory = MagicMock(return_value=False)
+        orch2._planner = MagicMock()
+        orch2._planner.plan_trip = AsyncMock(return_value={
+            "session_id": sid, "status": "ok",
+            "trip_plan": {"city": "深圳", "start_date": "", "end_date": "", "days": []},
+            "warnings": [],
+        })
+
+        resp2 = await orch2.plan_from_nl("公共交通", session_id=sid, user_id="u_sz2")
+        assert resp2.status == "ok", f"续接答交通方式后应进 planner，实际 {resp2.status}"
+        orch2._planner.plan_trip.assert_called_once()

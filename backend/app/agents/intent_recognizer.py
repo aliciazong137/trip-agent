@@ -56,6 +56,12 @@ INTENT_RECOGNIZER_PROMPT = """你是旅行需求解析助手。从用户 query �
   - 多个偏好用逗号拼接，如 preferences="历史文化,美食探店"
   - 上下文暗示也要推断（"带娃"→亲子、"文艺青年"→文艺打卡、"特种兵"除影响 pace 外也可记偏好）
 - "必去故宫" → must_visit=["故宫"]
+- transportation（交通方式）：用户明确提到则填入 trip_meta.transportation（不是放 assumptions）：
+  - "自驾/开车/开车去" → transportation="自驾"
+  - "公共交通/地铁/公交/坐地铁" → transportation="公共交通"
+  - "步行/走路/走路去" → transportation="步行"
+  - "高铁/火车/动车" → transportation="高铁"
+  - 未提及 → 不填（trip_meta.transportation 留空，不要放 assumptions）
 - pace（节奏）你**必须**映射到 relaxed/normal/packed 三者之一，禁止输出其他值：
   - 快节奏（特种兵/极限/紧凑/赶/打卡多/急/j人 等）→ packed
   - 慢节奏（轻松/休闲/慢/度假/p人 等）→ relaxed
@@ -87,12 +93,13 @@ missing_fields 记录必填字段缺失或可选字段用户可能想提供但�
   }},
   "missing_fields": [],
   "invalid_fields": [],
-  "assumptions": ["未提供出发日期 start_date", "未提供交通方式 transportation"]
+  "assumptions": ["未提供出发日期 start_date"]
 }}
 ```
 
 **字段说明：**
 - trip_meta: 按 schemas.py 的 TripMeta 结构。用户没说的字段用 null 或空数组，**不要编造**
+- transportation: 用户明确提到交通方式时必须填入 trip_meta.transportation（不是 assumptions）；未提及则留空
 - missing_fields: 必填字段缺失的列表，如 ["city", "days"]
 - invalid_fields: 用户说了但值不合法的字段，如 days=100
 - assumptions: 用户没说但用了默认值的字段说明
