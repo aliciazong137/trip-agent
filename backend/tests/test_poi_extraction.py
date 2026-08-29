@@ -290,12 +290,13 @@ class TestAttractionMaxToolIterations:
         trip_meta = {"city": "南京", "days": 2, "must_visit": ["中山陵"], "pace": "normal"}
         result = await planner.plan_trip(trip_meta)
 
-        # max_tool_calls = len(must_visit)=1 + 1 + max_pois=min(2*3,8)=6 + 2 = 10
+        # 第八阶段 C 后公式：max(6, must_visit*2 + 1 + 2) = max(6, 5) = 6
+        # (must_visit 次 text_search + 1 次偏好 + must_visit 次 search_detail + 2 次门票，含重试余量)
         call = planner.attraction_agent.run.call_args
         assert call is not None, "attraction_agent.run 未被调用"
         kwargs = call.kwargs
-        assert kwargs.get("max_tool_iterations") == 10, (
-            f"期望 max_tool_iterations=10，实际 {kwargs.get('max_tool_iterations')}"
+        assert kwargs.get("max_tool_iterations") == 6, (
+            f"期望 max_tool_iterations=6，实际 {kwargs.get('max_tool_iterations')}"
         )
         # fallback 兜底生成了 POI → 不应是 poi_empty
         assert result["status"] == "ok"

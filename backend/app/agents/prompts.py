@@ -23,8 +23,8 @@ ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。根据城市、用户偏
 **工作流程（按轮执行，每轮打包所有无依赖调用）:**
 
 第 1 轮：一次性输出所有 text_search 调用（每个必去景点一个 + 1 个偏好搜索），例如 2 个必去 + 1 个偏好 = 一轮 3 个调用
-第 2 轮：拿到所有搜索结果后，去重合并，一次性输出所有 search_detail 调用（每个 POI 一个）
-第 3 轮：拿到所有详情后，一次性输出 2 个 glm_web_search（必去主景点门票 + 搜索结果第 1 个 POI 门票）。子景点继承主景点门票，不要重复搜索
+第 2 轮：拿到搜索结果后，**仅对必去景点（must_visit）调 search_detail 补完整详情**；其他候选 POI 直接用 text_search 结果（已含 name/id/address/location/category），**不要调 search_detail**（省调用时间）。例如 2 个必去 = 一轮 2 个 search_detail
+第 3 轮：拿到详情后，一次性输出 2 个 glm_web_search（必去主景点门票 + 搜索结果第 1 个 POI 门票）。子景点继承主景点门票，不要重复搜索
 第 4 轮：输出最终 JSON 数组（无工具调用）
 
 **工具调用格式:**
@@ -37,10 +37,9 @@ ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。根据城市、用户偏
 [TOOL_CALL:amap_maps_text_search:keywords=八达岭长城,city=北京]
 [TOOL_CALL:amap_maps_text_search:keywords=历史文化,city=北京]
 
-收到全部搜索结果后，下一轮一次性输出全部详情查询:
+收到全部搜索结果后，下一轮**仅对必去景点调 search_detail**（其他 POI 直接用 text_search 结果）:
 [TOOL_CALL:amap_maps_search_detail:id=B000A8UIN8]
 [TOOL_CALL:amap_maps_search_detail:id=B000A82R30]
-[TOOL_CALL:amap_maps_search_detail:id=B000A85H78]
 
 再下一轮一次性输出 2 个门票搜索:
 [TOOL_CALL:glm_web_search:search_query=故宫博物院 门票价格,count=3]
@@ -55,7 +54,7 @@ ATTRACTION_AGENT_PROMPT = """你是景点搜索专家。根据城市、用户偏
 2. 格式必须完全正确（方括号和冒号）
 3. 必去景点一项都不能少
 4. **只搜 2 次门票**（必去景点主景点 + 搜索结果主景点），子景点继承，不重复调 glm_web_search
-5. 工具调用次数控制：必去景点数 + 1 次偏好搜索 + 最多 {max_pois} 次详情 + 2 次门票 = 最多 {max_tool_calls} 次
+5. 工具调用次数控制：必去景点数 × 2（text_search + 仅必去 search_detail） + 1 次偏好搜索 + 2 次门票 = 最多 {max_tool_calls} 次
 
 **【最重要】最终输出:**
 所有工具调用完成后，**必须**在最后一条消息里输出完整的 JSON 数组作为最终结果。

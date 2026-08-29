@@ -139,25 +139,25 @@ class TripPlannerAgent:
         )
 
     async def plan_trip(self, trip_meta: dict, guide_text: str = "") -> dict:
-        """
-        生成旅行计划
+        """生成旅行计划"""
+        import time
+        t = {"start": time.time()}
+        def _mark(k): t[k] = time.time()
+        def _log():
+            import logging
+            log = logging.getLogger("perf")
+            segs = []
+            prev = t["start"]
+            for k in ["create_session","research","schedule","knowledge","hotel","planner","parse"]:
+                if k in t:
+                    segs.append(f"{k}={t[k]-prev:.1f}s")
+                    prev = t[k]
+            log.warning("[perf] plan_trip total=%.1fs | %s", time.time()-t["start"], " ".join(segs))
 
-        编排（修正后）：
-          1. create_session
-          2. 并行调 3 个研究 Agent（asyncio.gather）—— 景点/天气/酒店独立任务
-          3. 确定性排程（Python 直接调，不经过 LLM）：
-             - 从景点研究结果提取 POI 存到 poi-list
-             - build_itinerary_from_data 生成行程
-             - check_constraints 校验
-          4. PlannerAgent（SimpleAgent，一次 LLM 调用）整合所有结果 → TripPlan JSON
-          5. 从 session 读确定性 itinerary 作为最终 days
-
-        Returns:
-            {session_id, trip_plan, warnings, status, research}
-        """
         # 1. 创建 session
         session_id = new_session_id()
         await session_store.create_session(session_id, trip_meta, guide_text)
+        _mark("create_session")
 
         city = trip_meta.get("city", "")
         days = trip_meta.get("days", 3)
@@ -169,8 +169,10 @@ class TripPlannerAgent:
         # POI 数量按天数动态调整（第零期续作：原硬编码"最多 3 个"导致 2 天行程 POI 不足）
         min_pois = max(days * 2, 4)        # 至少 4 个；2 天至少 4 个候选
         max_pois = min(days * 3, 8)        # 最多 8 个，控制 MCP 调用耗时
-        # 工具调用上限：must_visit 数 + 1 次偏好 + max_pois 次详情 + 2 次门票
-        max_tool_calls = len(must_visit) + 1 + max_pois + 2
+        # 工具调用上限同时作为 SimpleAgent 的最大迭代轮数。
+        # 无 must_visit 时模型可能仍对候选调用 detail，至少保留 6 轮：
+        # 搜索 → 详情 → 门票 → 最终 JSON，并给模型一次重试余量。
+        max_tool_calls = max(6, len(must_visit) * 2 + 1 + 2)
 
         # 景点 Agent 的 prompt 按本次 trip_meta 动态注入数量参数（第零期续作新增）
         self.attraction_agent.system_prompt = ATTRACTION_AGENT_PROMPT.format(
@@ -186,13 +188,13 @@ class TripPlannerAgent:
             f"至少 {min_pois} 个、最多 {max_pois} 个 POI。\n"
             f"[TOOL_CALL:amap_maps_text_search:keywords={preferences},city={city}]"
         )
-        weather_query = f"请查询 {city} 的天气信息\n[TOOL_CALL:amap_maps_weather:city={city}]"
-        # 2. 串行调景点+天气研究 Agent（酒店搜索移到排程后，结合行程区域）
-        #    第二阶段：整个研究阶段包在一个线程的一个 loop 里，MCP 进程只启动一次。
+        # 2. 景点+天气并行（第八阶段 A+B：天气改直调 MCP，与景点 Agent 并行）
+        #    整个研究阶段包在一个线程的一个 loop 里，MCP 进程只启动一次。
         attraction_response, weather_response = await asyncio.to_thread(
             self._research_phase_sync,
-            attraction_query, weather_query, max_tool_calls,
+            attraction_query, city, max_tool_calls,
         )
+        _mark("research")
 
         # 3. 确定性排程（Python 直接调，不经过 LLM）
         # 从景点研究结果提取 POI（LLM 返回的 JSON 数组）
@@ -237,12 +239,15 @@ class TripPlannerAgent:
                 schedule_warnings = schedule_warnings + schedule_result["warnings"]
         else:
             itinerary = {"session_id": session_id, "city": city, "version": 1, "days": []}
+        _mark("schedule")
 
         # 3.5 RAG 检索攻略知识（第三期：用 city + preferences 个性化检索）
         knowledge_context = await self._retrieve_knowledge(city, trip_meta)
+        _mark("knowledge")
 
         # 3.6 酒店搜索（排程后，结合行程 area_cluster 搜附近酒店）
         hotel_response = await self._hotel_search_phase(city, trip_meta, itinerary)
+        _mark("hotel")
 
         # 4. PlannerAgent（SimpleAgent，一次 LLM 调用）整合所有结果
         planner_query = self._build_planner_query(
@@ -254,6 +259,7 @@ class TripPlannerAgent:
             if settings.llm_thinking_disabled else {}
         )
         planner_response = await asyncio.to_thread(self.planner_agent.run, planner_query, **planner_kwargs)
+        _mark("planner")
 
         # 5. 解析 TripPlan
         trip_plan = _parse_llm_json(planner_response) or {
@@ -309,6 +315,8 @@ class TripPlannerAgent:
         # - "ok"：itinerary.days 非空，行程已生成
         # - "poi_empty"：POI 提取失败（含 fallback 失败），行程为空
         plan_status = "ok" if itinerary.get("days") else "poi_empty"
+        _mark("parse")
+        _log()
 
         return {
             "session_id": session_id,
@@ -354,41 +362,48 @@ class TripPlannerAgent:
 
         return []
 
-    def _research_phase_sync(self, attraction_query: str, weather_query: str,
+    def _research_phase_sync(self, attraction_query: str, weather_city: str,
                              max_tool_calls: int):
-        """
-        整个研究阶段跑在一个线程的一个 loop 里，MCP 进程只启动一次（第二阶段优化）
+        """景点 Agent 与天气直调 MCP 真并行。"""
+        from concurrent.futures import ThreadPoolExecutor
 
-        流程：open_shared → 3 个研究 Agent 串行 run → finally close_shared
-
-        正确性：
-          - asyncio.to_thread 的 worker 线程无运行中的 loop，open_shared 建新 loop
-          - 3 个 Agent 串行，SimpleAgent 循环内 MCPWrappedTool.run →
-            PersistentMCPTool.run 检测共享连接复用，无并发无需锁
-          - finally 必关，异常也不泄漏进程；close 后 fallback/prefetch 自动回落短连接
-
-        第零期三作续修保留：attraction agent 传 max_tool_iterations=max_tool_calls，
-        与 prompt 里告诉 LLM 的工具调用预算对齐（根治间歇性不吐 JSON）。
-
-        第四阶段：研究 Agent 关 GLM 思考（thinking=disabled）。
-        glm-5.2 默认开思考，每轮先跑思考链（实测 14s vs 关思考 5.5s）。
-        试验证实关思考无行为退化（轮次/JSON/POI 不变，attraction 67s → 21s）。
-        SimpleAgent.run 的 **kwargs 每轮透传给 llm.invoke → API extra_body。
-        配置开关 settings.llm_thinking_disabled（默认开，env 可回退）。
-        """
         think_kwargs = (
             {"extra_body": {"thinking": {"type": "disabled"}}}
             if settings.llm_thinking_disabled else {}
         )
-        self.amap_tool.open_shared()
-        try:
-            attraction_response = self.attraction_agent.run(
-                attraction_query, max_tool_iterations=max_tool_calls, **think_kwargs
-            )
-            weather_response = self.weather_agent.run(weather_query, **think_kwargs)
-            return attraction_response, weather_response
-        finally:
-            self.amap_tool.close_shared()
+
+        def run_attraction():
+            self.amap_tool.open_shared()
+            try:
+                return self.attraction_agent.run(
+                    attraction_query,
+                    max_tool_iterations=max_tool_calls,
+                    **think_kwargs,
+                )
+            finally:
+                self.amap_tool.close_shared()
+
+        def run_weather():
+            # 天气只有一次确定性 MCP 调用，不再经过 WeatherAgent/LLM。
+            # 使用独立工具实例，避免和景点长连接跨线程共享 event loop。
+            weather_tool = _create_amap_mcp_tool()
+            try:
+                weather_tool.open_shared()
+                return weather_tool.run({
+                    "tool_name": "maps_weather",
+                    "arguments": {"city": weather_city},
+                })
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("direct weather lookup failed: %s", exc)
+                return ""
+            finally:
+                weather_tool.close_shared()
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="research") as pool:
+            attraction_future = pool.submit(run_attraction)
+            weather_future = pool.submit(run_weather)
+            return attraction_future.result(), weather_future.result()
 
     async def _hotel_search_phase(self, city: str, trip_meta: dict, itinerary: dict) -> str:
         """排程后搜酒店，结合行程主区域（area_cluster）搜附近酒店"""
@@ -599,16 +614,30 @@ class TripPlannerAgent:
         itinerary: dict = None,
         knowledge_context: str = "",
     ) -> str:
-        # 极简 query：只传天气 + 确定性行程摘要（含每天门票），避免 query 过长导致 GLM 重试
-        weather_short = (weather_response or "")[:800]
+        # 第八阶段 D：只给 Planner 传结构化摘要，避免完整 MCP 响应撑大上下文。
+        # attraction_response 仅用于兼容调用签名，不再注入原始文本。
+        del attraction_response
+        weather_short = (weather_response or "")[:500]
         knowledge_section = (
-            f"**攻略知识（RAG 检索，供参考补充建议）:**\n{knowledge_context}"
+            f"**攻略知识（RAG 检索，供参考补充建议）:**\n{knowledge_context[:1200]}"
             if knowledge_context else ""
         )
-        hotel_short = (hotel_response or "")[:600]
+
+        # 酒店结果只保留 name/area/price 等决策字段，避免传入完整 MCP 原文。
+        hotels = self._extract_hotels_from_response(hotel_response)
+        hotel_summary = []
+        for h in hotels[:6]:
+            if not isinstance(h, dict):
+                continue
+            hotel_summary.append({
+                "name": h.get("name", ""),
+                "area": h.get("area", ""),
+                "price_range": h.get("price_range", ""),
+                "type": h.get("type", ""),
+            })
         hotel_section = (
-            f"**酒店搜索结果（高德 MCP，根据行程区域搜的）:**\n{hotel_short}"
-            if hotel_short else ""
+            f"**酒店摘要（根据行程区域搜索）:**\n{json.dumps(hotel_summary, ensure_ascii=False)}"
+            if hotel_summary else ""
         )
 
         itinerary_summary = "无确定性排程结果"

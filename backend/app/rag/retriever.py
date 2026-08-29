@@ -57,6 +57,11 @@ def search_sync(
     top_k = top_k or settings.rag_top_k
     min_score = min_score if min_score is not None else settings.rag_min_score
 
+    # 城市预检：无该城市攻略时直接返回，避免无意义的 embedding 加载。
+    if city and vectorstore.count_by_city(city) == 0:
+        logger.info("RAG 无 %s 攻略，跳过 embedding 检索", city)
+        return []
+
     # 知识库空时直接返回 []，不触发 embedding 加载
     if vectorstore.count() == 0:
         logger.info("RAG 知识库为空，跳过检索")

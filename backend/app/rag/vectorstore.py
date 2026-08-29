@@ -165,6 +165,19 @@ def count() -> int:
         return 0
 
 
+def count_by_city(city: str) -> int:
+    """按城市统计攻略 chunk 数，只读 metadata，不加载 embedding。"""
+    if not city:
+        return 0
+    try:
+        coll = get_collection()
+        result = coll.get(where={"city": city}, include=[])
+        return len(result.get("ids", []))
+    except Exception as exc:
+        logger.warning("按城市统计 RAG chunk 失败 city=%s: %s", city, exc)
+        return 0
+
+
 def list_all() -> List[Dict[str, Any]]:
     """列出所有 chunks（调试用，慎用，可能很大）"""
     coll = get_collection()
