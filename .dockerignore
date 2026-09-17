@@ -1,0 +1,14 @@
+.git
+.DS_Store
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+backend/.env
+backend/context
+data/chroma
+data/memory
+data/usage
+Spider_XHS/venv
+Spider_XHS/node_modules
+Spider_XHS/cookie.txt
+Spider_XHS/qrcode.png

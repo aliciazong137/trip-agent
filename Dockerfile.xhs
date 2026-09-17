@@ -1,0 +1,26 @@
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    NODE_ENV=production
+
+COPY Spider_XHS/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt fastapi "uvicorn[standard]"
+
+COPY Spider_XHS/package*.json /app/Spider_XHS/
+WORKDIR /app/Spider_XHS
+RUN npm ci --omit=dev
+
+WORKDIR /app
+COPY Spider_XHS/ /app/Spider_XHS/
+COPY deploy/xhs_service.py /app/xhs_service.py
+
+EXPOSE 18061
+CMD ["uvicorn", "xhs_service:app", "--host", "0.0.0.0", "--port", "18061"]

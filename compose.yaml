@@ -9,6 +9,17 @@ services:
       - trip_context:/app/backend/context
       - trip_memory:/app/data/memory
       - trip_usage:/app/data/usage
+    environment:
+      XHS_SEARCH_URL: ${XHS_SEARCH_URL:-http://xhs:18061}
+  xhs:
+    profiles: ["xhs"]
+    build:
+      context: .
+      dockerfile: Dockerfile.xhs
+    restart: unless-stopped
+    # 仅容器网络内可访问，Cookie 不会经由公网暴露。
+    volumes:
+      - ./Spider_XHS/cookie.txt:/app/Spider_XHS/cookie.txt:ro
   web:
     build:
       context: .

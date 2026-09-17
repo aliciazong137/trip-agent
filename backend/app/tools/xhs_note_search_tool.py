@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 from hello_agents.tools import Tool, ToolParameter
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,24 @@ class XhsNoteSearchTool(Tool):
         return "\n\n".join(lines) if lines else ""
 
     async def _fetch(self, query: str, limit: int) -> Dict[str, Any]:
-        """subprocess 调 Spider_XHS venv 跑抓取脚本"""
+        """优先调用部署的检索服务；本地开发环境保留 subprocess 兼容模式。"""
+        if settings.xhs_search_url:
+            try:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=65) as client:
+                    response = await client.post(
+                        f"{settings.xhs_search_url.rstrip('/')}/search",
+                        json={"query": query, "limit": limit},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        return payload
+                    return {"success": False, "msg": "invalid xhs service response"}
+            except Exception as e:
+                return {"success": False, "msg": f"xhs service error: {e}"}
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 str(SPIDER_PYTHON),

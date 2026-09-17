@@ -28,6 +28,8 @@ class Settings:
 
     # 小红书 MCP（H9 预留）
     xiaohongshu_mcp_url: str = os.getenv("XIAOHONGSHU_MCP_URL", "http://localhost:18060/mcp")
+    # 部署小红书检索服务后，通过 Docker 内网访问；留空时保留本地 subprocess 兼容模式。
+    xhs_search_url: str = os.getenv("XHS_SEARCH_URL", "")
 
     # 应用
     app_host: str = os.getenv("APP_HOST", "0.0.0.0")
