@@ -69,6 +69,8 @@ class MemoryCompressionResult(BaseModel):
     """LLM 压缩一次旅行规划后的结构化结果"""
     summary: str
     facts: Dict[str, Any] = Field(default_factory=dict)
+    # 稳定用户画像：只有输入有证据时才填写，不把本次临时目的地当长期偏好
+    profile: Dict[str, Any] = Field(default_factory=dict)
     preferences: List[str] = Field(default_factory=list)
     avoid: List[str] = Field(default_factory=list)
     decisions: List[str] = Field(default_factory=list)
@@ -79,6 +81,8 @@ class MemoryCompressionResult(BaseModel):
 def build_memory_text(compression: MemoryCompressionResult) -> str:
     """把压缩结果转为适合 embedding 的文本"""
     parts = [compression.summary.strip()]
+    if compression.profile:
+        parts.append("用户画像：" + "、".join(f"{k}={v}" for k, v in compression.profile.items()))
     if compression.preferences:
         parts.append("偏好：" + "、".join(compression.preferences))
     if compression.avoid:

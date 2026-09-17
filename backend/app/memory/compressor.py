@@ -23,14 +23,17 @@ PROMPT = """你是旅行记忆压缩器。请把一次旅行规划对话压缩�
 1. 只能基于输入内容总结，不要添加输入中没有的信息
 2. 不要把攻略知识当成用户偏好
 3. 不要把系统推荐当成用户明确偏好，除非用户接受或明确表达
-4. unknowns 要记录用户没提供的重要字段
-5. 输出严格 JSON，不要解释
-6. 如果不确定，宁可放 unknowns，不要猜
+4. 稳定画像只记录输入中有明确证据的内容：J人/计划型 → planning_style=J；P人/随性 → planning_style=P；“从北京出发/常住北京” → home_city=北京；明确交通/住宿偏好才记录对应字段
+5. 本次目的地、天数、日期是旅行事实，放 facts，不要放入 profile；不要把“去过/计划去某城市”当成 home_city
+6. unknowns 要记录用户没提供的重要字段
+7. 输出严格 JSON，不要解释
+8. 如果不确定，宁可放 unknowns，不要猜
 
 输出 JSON schema：
 {
   "summary": "1-3句话摘要",
   "facts": {"city": "南京", "days": 2, "travelers": {...}, "budget": null, "pace": "normal"},
+  "profile": {"planning_style": "J", "home_city": "北京", "transportation": "公共交通", "accommodation": null},
   "preferences": ["亲子友好", "历史文化"],
   "avoid": [],
   "decisions": ["选择中山陵作为核心景点"],
@@ -107,10 +110,21 @@ class MemoryCompressor:
             "travelers": travelers,
             "budget": trip_meta.get("budget"),
             "pace": trip_meta.get("pace"),
+            "transportation": trip_meta.get("transportation"),
         }
+        profile = {}
+        query_lower = (user_query or "").lower()
+        if "j人" in query_lower or "计划型" in query_lower or "高能量" in query_lower:
+            profile["planning_style"] = "J"
+        if "从北京出发" in user_query or "北京出发" in user_query:
+            profile["home_city"] = "北京"
+        if trip_meta.get("transportation"):
+            profile["transportation"] = trip_meta["transportation"]
+        if trip_meta.get("accommodation"):
+            profile["accommodation"] = trip_meta["accommodation"]
         preferences = []
-        if prefs:
-            preferences.append(str(prefs))
+        if profile.get("planning_style") == "J":
+            preferences.append("偏好计划性（自称J人）")
         if travelers.get("kids") or travelers.get("children"):
             preferences.append("亲子友好")
         decisions = []
@@ -130,6 +144,7 @@ class MemoryCompressor:
         return MemoryCompressionResult(
             summary=summary,
             facts=facts,
+            profile=profile,
             preferences=preferences,
             avoid=trip_meta.get("avoid") or [],
             decisions=decisions,

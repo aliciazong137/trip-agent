@@ -21,7 +21,8 @@ uvicorn app.main:app --reload
 ```
 
 - API：http://localhost:8000（Swagger：/docs）
-- 前端 Vue3：localhost:5173（CORS 已放行，前端不在本仓库）
+- 前端演示：`cd frontend && npm install --registry=https://npm.corp.kuaishou.com/ && npm run dev`（默认 `http://localhost:5173`）
+- 前端真实地图配置：复制 `frontend/.env.example` 为 `frontend/.env`，填写 `VITE_AMAP_JS_KEY`；可选 `VITE_API_BASE_URL`
 
 ## API
 
@@ -45,12 +46,14 @@ curl -s http://localhost:8000/api/trip/plan \
 
 ### 其他
 
-- `GET /api/trip/session/{session_id}`：会话状态
+- `GET /api/trip/session/{session_id}/map`：读取已有 session 的每日 POI 顺序、坐标和交通方式，供对话路线消息使用
 - `GET /api/rag/search?q=南京+中山陵&top_k=5&city=南京`：RAG 检索
 - `GET /api/memory/{user_id}/search?q=...`：Memory 检索
 - `GET /health`：健康检查
 
-## 测试
+- 高德 Web JS API Key 仅配置在前端 `VITE_AMAP_JS_KEY`，服务端 MCP/API 密钥不返回浏览器
+- 路线详情以对话消息形式展示：可按天切换、点击点位定位、查看时间轴，并发送当前路线详情
+
 
 ```bash
 cd backend && pytest

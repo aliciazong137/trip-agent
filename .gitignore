@@ -17,6 +17,7 @@ __pycache__/
 # backend session 数据（运行时产物，不入库）
 backend/context/*/
 !backend/context/.gitkeep
+backend/context/trending-notes.json
 backend/.env
 backend/memory/
 backend/tool-output/
@@ -28,6 +29,15 @@ data/memory.db
 # HelloAgents MemoryTool 实测产物
 backend/memory_data/
 data/memory/
+data/usage/
 
 # WorkBuddy 会话/记忆数据（不入库）
 .workbuddy/
+logs/
+
+# 本地设计工具、第三方工作目录与 TypeScript 编译缓存
+.codeflicker/
+Spider_XHS/
+amap-skills/
+project.ui
+*.tsbuildinfo

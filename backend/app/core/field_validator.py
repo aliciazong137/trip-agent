@@ -119,7 +119,10 @@ def validate_trip_meta(raw: dict) -> Tuple[Optional[TripMeta], List[str], List[s
             invalid.append("budget")
         else:
             amount = budget.get("amount")
-            if amount is not None:
+            if amount is None:
+                # LLM 对未提及字段常输出 null 占位（{"amount": null}），视为未提供预算
+                raw.pop("budget", None)
+            else:
                 try:
                     budget["amount"] = float(amount)
                     if budget["amount"] < 0:
@@ -177,7 +180,7 @@ def can_plan(missing: List[str], invalid: List[str]) -> bool:
     return not missing and not invalid
 
 
-def build_clarification_question(missing: List[str], invalid: List[str]) -> str:
+def build_clarification_question(missing: List[str], invalid: List[str], partial_trip_meta: Optional[dict] = None) -> str:
     """
     根据缺失/非法字段生成人类可读的澄清问题
 
@@ -216,8 +219,15 @@ def build_clarification_question(missing: List[str], invalid: List[str]) -> str:
         parts.append("部分字段格式不符合规范，请补充核心信息（城市、天数、人数、预算）。")
 
     if not parts:
-        return "请补充更多行程信息。"
+        return "再补充一点行程想法，我就能继续帮你安排。"
 
-    return "为了帮您生成准确的行程，请补充以下信息：\n" + "\n".join(f"- {p}" for p in parts)
+    city = (partial_trip_meta or {}).get("city") if isinstance(partial_trip_meta, dict) else None
+    city = city.strip() if isinstance(city, str) else ""
+    # 确定性兜底也要像小渡说话：不依赖额外 LLM，且不虚构用户未提供的事实。
+    if city and "days" in missing and "city" not in missing:
+        return f"{city}很值得慢慢逛～你计划玩几天？（如：2 天、3 天）"
+    if city:
+        return f"去{city}听起来不错～" + "\n".join(parts)
+    return "我来帮你安排旅行～还需要补充以下信息：\n" + "\n".join(parts)
 
 

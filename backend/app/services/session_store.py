@@ -95,7 +95,12 @@ async def _atomic_write(file_path: Path, content: str, signal: Optional[asyncio.
 
 # ─── Session 生命周期 ──────────────────────────────────────────────────────────
 
-async def create_session(session_id: str, trip_meta: dict, guide_text: str = "") -> dict:
+async def create_session(
+    session_id: str,
+    trip_meta: dict,
+    guide_text: str = "",
+    user_id: Optional[str] = None,
+) -> dict:
     """
     创建 session，初始化所有业务文件。
 
@@ -103,6 +108,7 @@ async def create_session(session_id: str, trip_meta: dict, guide_text: str = "")
         session_id: sess_ + 12位hex
         trip_meta: TripMeta dict
         guide_text: 攻略原文（可选）
+        user_id: 会话所属用户。旧会话没有该字段时保持兼容。
 
     Returns:
         SessionFiles dict
@@ -120,6 +126,7 @@ async def create_session(session_id: str, trip_meta: dict, guide_text: str = "")
 
     session = {
         "session_id": session_id,
+        "user_id": user_id or None,
         "phase": "intake",
         "intent": "new_plan",
         "completed": [],
@@ -177,6 +184,37 @@ async def load_session(session_id: str) -> Optional[dict]:
         }
     except FileNotFoundError:
         return None
+
+
+async def list_recent_cities(user_id: str, limit: int = 3) -> list[str]:
+    """只读取本人已创建行程的目的地，供已主动开启的个性化推荐做本地排序。"""
+    def read() -> list[str]:
+        ranked: list[tuple[str, str]] = []
+        root = _context_root()
+        if not root.exists():
+            return []
+        for directory in root.iterdir():
+            if not directory.is_dir() or not directory.name.startswith("sess_"):
+                continue
+            try:
+                session = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+                if session.get("user_id") != user_id:
+                    continue
+                meta = json.loads((directory / "trip-meta.json").read_text(encoding="utf-8"))
+                city = str(meta.get("city") or "").strip()
+                if city:
+                    ranked.append((str(session.get("updated_at") or ""), city))
+            except (OSError, json.JSONDecodeError):
+                continue
+        ranked.sort(reverse=True)
+        cities: list[str] = []
+        for _, city in ranked:
+            if city not in cities:
+                cities.append(city)
+            if len(cities) >= limit:
+                break
+        return cities
+    return await asyncio.to_thread(read)
 
 
 # ─── 单文件 save/load ──────────────────────────────────────────────────────────

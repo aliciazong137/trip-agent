@@ -373,11 +373,13 @@ async def build_itinerary_from_data(
         )
 
     # 预算检查
+    # 注意 budget.get("amount", 0) 在 amount=None（LLM 输出 null 占位）时返回 None 而非 0
     total_cost = sum(d["estimated_total_cost"] for d in days)
     budget = trip_meta.get("budget")
-    if budget and total_cost > budget.get("amount", 0):
+    amount = (budget.get("amount") or 0) if isinstance(budget, dict) else 0
+    if amount > 0 and total_cost > amount:
         warnings.append(
-            f"行程估算总成本 {total_cost} 超出预算 {budget.get('amount')}（{budget.get('currency')}）"
+            f"行程估算总成本 {total_cost} 超出预算 {amount}（{budget.get('currency') if isinstance(budget, dict) else ''}）"
         )
 
     itinerary = {

@@ -3,7 +3,7 @@ TripIntentRecognizer - 自然语言意图识别 Agent（第一期）
 
 核心原则（review 反馈）：
   - 只从用户 query 抽取明确出现的字段，不猜测、不推断、不补全
-  - query 没说的字段一律放入 missing_fields，不要填默认值
+  - query 没说的可选字段保持空，仅必填 city/days 放入 missing_fields
   - 非旅行规划请求 → intent=unsupported
   - 不接收 RAG 上下文（用户事实严格来自用户原话）
 
@@ -25,25 +25,60 @@ from app.models.schemas import IntentResult, TripMeta
 logger = logging.getLogger(__name__)
 
 
+def enforce_intent_contract(
+    result: IntentResult,
+    has_active_session: bool,
+    has_conversation_context: bool = False,
+) -> IntentResult:
+    """校正模型输出的上下文约束，不根据关键词重新判断用户意图。
+
+    模型仍负责开放式理解。这里仅阻止不可能的状态进入工作流：没有当前
+    Session 时不能“修改当前行程”；自然对话必须有可展示的回复。
+    """
+    if result.intent in {"current_trip_question", "current_trip_modify"} and not has_active_session:
+        logger.warning("意图模型返回 %s 但当前不存在 Session，降级为自然对话", result.intent)
+        return IntentResult(
+            intent="conversation",
+            chat_reply="我在，想聊什么都可以。",
+        )
+    if result.intent == "conversation_context_question" and not has_conversation_context:
+        logger.warning("意图模型返回 conversation_context_question 但没有聊天摘要，降级为自然对话")
+        return IntentResult(intent="conversation", chat_reply="我在，想聊什么都可以。")
+    if result.intent == "conversation" and not (result.chat_reply or "").strip():
+        return result.model_copy(update={"chat_reply": "我在，想聊什么都可以。"})
+    if result.intent == "unsupported" and not (result.chat_reply or "").strip():
+        return result.model_copy(update={"chat_reply": "这件事我未必最擅长，不过我会尽量帮你一起想想。"})
+    return result
+
+
 INTENT_RECOGNIZER_PROMPT = """你是旅行需求解析助手。从用户 query 中抽取结构化 trip_meta，用于后续行程规划。
 
 **严格规则（最重要）：**
 1. **只抽取用户 query 中明确出现的字段**，不要猜测、不要推断、不要用常识补全
-2. query 没说的字段一律放入 missing_fields，不要填默认值
+2. query 没说的可选字段保持空，不要填默认值；missing_fields 只记录缺失的 city/days
 3. **intent 判断规则**：
    - query 提到任何与"旅行/出游/去某地/玩/几天"相关的词 → intent="trip_planning"
    - 即使 city 或 days 缺失，只要 query 像旅行规划 → intent="trip_planning"（把缺的字段放入 missing_fields）
-   - 只有完全与旅行无关（如"写邮件"、"查天气"、"翻译这段话"）才 intent="unsupported"
+   - 只有完全与旅行无关（如"写邮件"、"翻译这段话"、"做数学题"）才 intent="unsupported"
+   - 问候、寒暄、能力咨询、没有明确旅行对象的开放式表达（如"你好"、"我想问点别的"、"随便聊聊"、"你能做什么"）→ intent="conversation"。它们不是旅行规划，不能追问城市/天数。
+   - 对当前话题的取消、放弃或收尾（如"不想去了"、"算了"、"先不用了"、"取消吧"）→ intent="conversation"；自然确认即可，绝对不能展示旅行信息卡或重新开始规划。
+   - 完全无关的请求（如写邮件、翻译、做数学题）→ intent="unsupported"，不能进入旅行规划。
+   - **天气查询（查天气、今天/明天/本周天气）→ intent="weather_query"**（不是 unsupported！）
+   - 若下方提供了“当前已生成行程”，用户在问这份行程的内容、总结或解释（如“还记得上面的行程吗”“第一天去哪”）→ intent="current_trip_question"。
+   - 若下方提供了“当前聊天摘要”，用户在问上面的对话、攻略或路线方案（如“你还记得上面的内容吗”“刚才那三个方案是什么”）→ intent="conversation_context_question"。这不是新规划，也不是泛泛闲聊。
+   - 若下方提供了“当前已生成行程”，用户要新增、替换、删除、调整该行程中的地点或顺序（如“把目的地改成国子监”“第一天加故宫”）→ intent="current_trip_modify"。
+   - 没有当前已生成行程时，不能输出 current_trip_question 或 current_trip_modify。
    - 不要因为信息不全就把 trip_planning 判成 unsupported
 
 **抽取规则（按这些规则解析用户原话）：**
 - "三人行"/"三个人" → travelers.adults=3
-- "带两个孩子"/"一大一小" → adults=1, children=1（或按原话分）
+- "带两个孩子" → travelers.children=2，不猜测成人数；"一大一小" → adults=1, children=1
+- "亲子游/带娃/家庭游" 只表示偏好，不代表明确人数；没有具体人数时 travelers 留空，禁止追问几个大人、几个小朋友或儿童年龄
 - "两天一夜"/"玩两天"/"2天" → days=2
 - "预算5000" → budget.amount=5000, scope="unknown"
 - "预算5000/人" → budget.amount=5000, scope="per_person"
 - "预算5000左右" → budget.amount=5000, scope="unknown", approximate=true
-- "学生党"/"穷游" 等模糊描述 → 不要推算预算，放 missing_fields
+- "学生党"/"穷游" 等模糊描述 → 不要推算预算，budget 留空，不放 missing_fields
 - "去北京"/"想去南京" → city=对应城市
 - preferences（偏好）从用户原话或上下文推断，常见类别：
   - "历史文化/博物馆/古迹/文物/遗址" → preferences="历史文化"
@@ -74,8 +109,24 @@ assumptions 记录"用户没明说但用了默认值的字段"，格式如 "未�
 assumptions 只记默认值，**不记推断值**（如"学生党"不能推断成 budget=1000）。
 
 **关于 missing_fields：**
-missing_fields 记录必填字段缺失或可选字段用户可能想提供但没说清楚的。
-必填：city, days。缺任一必须放入 missing_fields。
+missing_fields 只记录必填字段 city、days 的缺失。
+travelers、preferences、budget、transportation 等都是可选字段，未提供也不能阻断规划，不放入 missing_fields。
+
+**关于 clarification_question（重要，省一次 LLM 调用）：**
+若 missing_fields 含必填字段（city/days），你必须在同一响应中直接生成澄清追问；两者齐全时 clarification_question=null，直接进入规划：
+- 人设：小渡，一位亲切活泼、有点俏皮的旅行助手
+- 先对用户输入热情呼应（如知道城市就表达期待），再自然地问缺的信息
+- 口语化，30-60 字，不要用列表/破折号/模板句式（如「为了帮您生成…」禁止）
+- 只追问 missing_fields 里缺的必填字段，不要问别的
+
+**关于 chat_reply（自然对话）：**
+- intent="conversation" 或 intent="unsupported" 时，必须生成 chat_reply，1-3 句自然中文。
+- 对"你好/hello/嗨"等问候，直接友好地打招呼；不要介绍能力边界、不要追问旅行信息，也不要以问题结尾或邀请用户说明需求。回复只限一条自然招呼，例如“你好呀，很高兴见到你。”
+- 对"你能做什么"等能力咨询，简洁介绍旅行规划、路线比较、行程回顾和调整。
+- 对非旅行请求，先自然回应，再诚实说明旅行是主要能力；不要使用固定模板，也不要强行把话题带去做攻略。
+- intent="trip_planning" 或 intent="weather_query" 时 chat_reply=null。
+- intent="current_trip_question" 或 intent="current_trip_modify" 时 trip_meta=null、chat_reply=null。
+- intent="conversation_context_question" 时 trip_meta=null、chat_reply=null。
 
 **输出 JSON 格式（严格按此结构）：**
 ```json
@@ -93,9 +144,12 @@ missing_fields 记录必填字段缺失或可选字段用户可能想提供但�
   }},
   "missing_fields": [],
   "invalid_fields": [],
-  "assumptions": ["未提供出发日期 start_date"]
+  "assumptions": ["未提供出发日期 start_date"],
+  "clarification_question": null,
+  "chat_reply": null
 }}
 ```
+（missing_fields 非空时 clarification_question 填小渡语气的追问；否则为 null）
 
 **字段说明：**
 - trip_meta: 按 schemas.py 的 TripMeta 结构。用户没说的字段用 null 或空数组，**不要编造**
@@ -107,11 +161,19 @@ missing_fields 记录必填字段缺失或可选字段用户可能想提供但�
 **特殊情况：**
 - intent="unsupported" 时，trip_meta 设为 null，missing_fields 为空
 - query 完全不像旅行规划时，intent="unsupported"
+- **intent="weather_query" 时，trip_meta 中只填 city（若提到），其余为空**
+- **intent="conversation" 时，trip_meta 设为 null，chat_reply 填自然回复**
+- **intent="current_trip_question" / "current_trip_modify" 只会在提供当前行程时使用，trip_meta 设为 null**
+- **intent="conversation_context_question" 只会在提供当前聊天摘要时使用，trip_meta 设为 null**
 - **信息不全但像旅行规划 → intent="trip_planning"，缺的字段放 missing_fields**
   - 正例："想去玩几天" → intent="trip_planning", missing_fields=["city", "days"]
   - 正例："去北京" → intent="trip_planning", missing_fields=["days"]
+  - 正例："查上海天气" → intent="weather_query", trip_meta.city="上海"
+  - 正例："明天北京天气怎么样" → intent="weather_query", trip_meta.city="北京"
   - 反例："写邮件" → intent="unsupported"
-  - 反例："今天上海天气" → intent="unsupported"
+  - 反例："帮我翻译这段话" → intent="unsupported"
+  - 正例："我想问点别的" → intent="conversation"，用 chat_reply 自然邀请用户继续说明
+  - 正例："你好" → intent="conversation", chat_reply="你好呀，很高兴见到你。"
 
 **最后一条消息必须是纯 JSON**（不要 ```json``` 代码块，直接输出 { 开头的 JSON 对象）。
 """
@@ -178,7 +240,8 @@ class TripIntentRecognizer:
         if memory_context:
             user_input = (
                 f"用户本次 query：{query}\n\n"
-                f"以下是该用户历史记忆，仅供偏好参考，禁止用于补全 city/days/travelers/budget 等本次事实：\n"
+                f"以下是上下文。若其中标注为当前已生成行程，只可用于判断用户是否在回顾或修改该行程；"
+                f"禁止用于补全 city/days/travelers/budget 等新规划事实：\n"
                 f"{memory_context}"
             )
         for attempt in range(self.max_retries + 1):
@@ -197,8 +260,18 @@ class TripIntentRecognizer:
                     logger.warning("IntentRecognizer attempt %d: %s", attempt + 1, last_error)
                     continue
 
-                # 兜底：若 LLM 返回的 trip_meta 缺字段，Pydantic 校验会抛错
-                return IntentResult.model_validate(data)
+                # LLM 负责意图理解；这里只校验结构和当前 Session 的客观约束。
+                result = IntentResult.model_validate(data)
+                result = enforce_intent_contract(
+                    result,
+                    has_active_session="当前已生成行程" in memory_context,
+                    has_conversation_context="当前聊天摘要" in memory_context,
+                )
+                logger.info(
+                    "intent 识别完成: intent=%s active_session=%s has_meta=%s",
+                    result.intent, "当前已生成行程" in memory_context, bool(result.trip_meta),
+                )
+                return result
             except Exception as e:
                 last_error = f"attempt {attempt + 1}: {type(e).__name__}: {str(e)[:200]}"
                 logger.warning("IntentRecognizer %s", last_error)

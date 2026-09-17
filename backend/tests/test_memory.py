@@ -148,3 +148,17 @@ async def test_memory_does_not_block_planning(monkeypatch):
     # 后台任务里的异常被吞掉，不抛出
     if orch._background_tasks:
         await asyncio.gather(*orch._background_tasks, return_exceptions=True)
+
+
+def test_template_compression_builds_user_profile():
+    from app.memory.compressor import MemoryCompressor
+    c = MemoryCompressor().compress_template(
+        "我是一个j人，想从北京出发去首尔玩3天",
+        {"city": "首尔", "days": 3, "pace": "packed", "transportation": "公共交通"},
+        None,
+    )
+    assert c.profile["planning_style"] == "J"
+    assert c.profile["home_city"] == "北京"
+    assert c.profile["transportation"] == "公共交通"
+    assert "偏好计划性（自称J人）" in c.preferences
+    assert "用户画像" in build_memory_text(c)

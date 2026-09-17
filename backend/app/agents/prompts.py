@@ -183,7 +183,7 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
   "city": "城市",
   "start_date": "YYYY-MM-DD",
   "end_date": "YYYY-MM-DD",
-  "days": [{"day":1,"hotel":{"name":"酒店名","area":"区域","price_range":"价格","estimated_cost":200,"type":"经济型"},"accommodation":"经济型","meals":[]}],
+  "days": [{"day":1,"hotel":{"name":"酒店名","area":"区域","price_range":"200-400元","rating":"4.5","estimated_cost":300,"type":"经济型"},"accommodation":"经济型","meals":[]}],
   "weather_info": [{"date":"","day_weather":"","night_weather":"","day_temp":0,"night_temp":0,"wind_direction":"","wind_power":""}],
   "overall_suggestions": "总体建议",
   "budget": {"total_attractions":0,"total_hotels":0,"total_meals":0,"total_transportation":0,"total":0}
@@ -192,7 +192,7 @@ PLANNER_AGENT_PROMPT = """你是行程规划专家。
 **规则:**
 - budget.total_attractions 必须等于确定性行程里每天 estimated_total_cost 的总和,不要自己估算门票
 - 若提供了攻略知识（RAG 检索片段），overall_suggestions 应结合攻略内容给出更具体、贴合目的地的建议（如避坑提示、特色推荐）；无攻略知识则基于天气和行程给建议
-- 若有酒店搜索结果，DayPlan.hotel 从结果中选（优先当天 area_cluster 对应区域的酒店）；不要编造酒店名
+- 若有酒店搜索结果，DayPlan.hotel 从结果中选（优先当天 area_cluster 对应区域）；不要编造酒店名；**rating/price_range/estimated_cost 从酒店摘要原样保留，摘要里为空就填空，不要编造**
 - budget.total_hotels 估算 = 每晚房价 × (天数-1)
 - budget.total_meals 估算 = 每天餐饮预算 × 天数
 - budget.total_transportation 估算根据交通方式

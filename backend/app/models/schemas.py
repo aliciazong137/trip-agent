@@ -9,7 +9,7 @@ Pydantic 数据模型 - 融合当前 TS domain.ts + Datawhale 第十三章 schem
   ReviseDayOperation (结构化修改)
   API 请求/响应模型
 """
-from typing import Optional, List, Union, Literal
+from typing import Any, Dict, Optional, List, Union, Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -29,6 +29,12 @@ class Budget(BaseModel):
     total_transportation: int = Field(default=0, description="交通总费用")
     total: int = Field(default=0, description="总费用")
 
+    @field_validator("total_attractions", "total_hotels", "total_meals", "total_transportation", "total", mode="before")
+    @classmethod
+    def _null_to_zero(cls, v):
+        """LLM 对缺失数值字段常输出 null，统一转 0"""
+        return 0 if v is None else v
+
 
 class WeatherInfo(BaseModel):
     """天气信息（第十三章，含温度解析验证器）"""
@@ -40,10 +46,18 @@ class WeatherInfo(BaseModel):
     wind_direction: str = Field(..., description="风向")
     wind_power: str = Field(..., description="风力")
 
+    @field_validator("date", "day_weather", "night_weather", "wind_direction", "wind_power", mode="before")
+    @classmethod
+    def _null_to_empty(cls, v):
+        """LLM 对缺失字段常输出 null，统一转空串"""
+        return "" if v is None else v
+
     @field_validator("day_temp", "night_temp", mode="before")
     @classmethod
     def parse_temperature(cls, v):
         """解析温度字符串："16°C" -> 16"""
+        if v is None:
+            return 0
         if isinstance(v, str):
             v = v.replace("°C", "").replace("℃", "").replace("°", "").strip()
             try:
@@ -107,6 +121,17 @@ class Meal(BaseModel):
     description: Optional[str] = Field(default=None)
     estimated_cost: int = Field(default=0, description="预估费用")
 
+    @field_validator("type", "name", mode="before")
+    @classmethod
+    def _null_to_empty(cls, v):
+        """LLM 对缺失字段常输出 null，统一转空串"""
+        return "" if v is None else v
+
+    @field_validator("estimated_cost", mode="before")
+    @classmethod
+    def _null_to_zero(cls, v):
+        return 0 if v is None else v
+
 
 class Hotel(BaseModel):
     """酒店信息（第十三章）"""
@@ -118,6 +143,17 @@ class Hotel(BaseModel):
     distance: str = Field(default="")
     type: str = Field(default="")
     estimated_cost: int = Field(default=0, description="预估费用（元/晚）")
+
+    @field_validator("name", "address", "price_range", "rating", "distance", "type", mode="before")
+    @classmethod
+    def _null_to_empty(cls, v):
+        """LLM 对缺失字段常输出 null，统一转空串（rating=null 等）"""
+        return "" if v is None else v
+
+    @field_validator("estimated_cost", mode="before")
+    @classmethod
+    def _null_to_zero(cls, v):
+        return 0 if v is None else v
 
 
 # ─── 行程 ──────────────────────────────────────────────────────────────────────
@@ -158,6 +194,32 @@ class Itinerary(BaseModel):
     version: int = Field(default=1, description="版本号")
 
 
+class MapPoint(BaseModel):
+    """地图路线中的一个已定位 POI。"""
+    order: int = Field(..., ge=1, description="当日访问顺序")
+    poi_id: str = Field(..., description="POI ID")
+    name: str = Field(..., description="POI 名称")
+    location: Optional[Location] = Field(default=None, description="经纬度")
+    start_time: Optional[str] = Field(default=None, description="开始时间")
+    end_time: Optional[str] = Field(default=None, description="结束时间")
+
+
+class DayRouteMap(BaseModel):
+    """单日路线地图数据。"""
+    day: int = Field(..., ge=1, description="第几天")
+    city: str = Field(default="", description="城市")
+    transportation: Optional[str] = Field(default=None, description="交通方式")
+    points: List[MapPoint] = Field(default=[], description="按行程顺序排列的地图点")
+    route_ready: bool = Field(default=False, description="是否至少有两个可规划路线的点")
+    unmapped_points: List[str] = Field(default=[], description="缺少合法坐标的 POI 名称")
+
+
+class MapData(BaseModel):
+    """可由前端路线消息直接消费的地图数据。"""
+    city: str = Field(default="", description="城市")
+    days: List[DayRouteMap] = Field(default=[], description="按天分组的路线")
+
+
 # ─── 用户输入元信息 ─────────────────────────────────────────────────────────────
 
 Pace = Literal["relaxed", "normal", "packed"]
@@ -192,6 +254,12 @@ class TripPlan(BaseModel):
     budget: Optional[Budget] = Field(default=None, description="预算信息")
     # 关联
     session_id: Optional[str] = Field(default=None, description="会话ID")
+
+    @field_validator("city", "start_date", "end_date", "overall_suggestions", mode="before")
+    @classmethod
+    def _null_to_empty(cls, v):
+        """LLM 对缺失字段常输出 null（start_date=null 等），统一转空串，避免整个规划失败"""
+        return "" if v is None else v
 
 
 # ─── 会话状态 ───────────────────────────────────────────────────────────────────
@@ -274,9 +342,15 @@ class SessionResponse(BaseModel):
 
 class NlTripPlanRequest(BaseModel):
     """自然语言规划请求"""
-    query: str = Field(..., min_length=2, max_length=2000, description="用户自然语言 query")
+    query: str = Field(..., min_length=1, max_length=2000, description="用户自然语言 query")
     session_id: Optional[str] = Field(default=None, description="会话 ID（澄清续接时携带）")
     user_id: Optional[str] = Field(default="default_user", description="用户 ID（Memory 隔离用，未登录时用 default_user）")
+    conversation_context: Optional[str] = Field(default=None, max_length=4000, description="当前可见对话摘要，仅用于回顾本轮聊天")
+    guide_style: Literal["full", "inspiration"] = Field(default="full", description="攻略展示样式：直接对话完整攻略 / 热门笔记简短选线")
+    # 热门推荐卡片的结构化上下文。该入口已经明确表示“按这篇笔记做路线”，
+    # 不再把笔记正文伪装成用户对话后交给意图识别器猜测。
+    inspiration_note: Optional[Dict[str, Any]] = Field(default=None, description="用户选中的热门旅行笔记")
+    inspiration_trip_meta: Optional[Dict[str, Any]] = Field(default=None, description="由热门笔记标签提取的目的地与默认天数")
 
 
 class IntentResult(BaseModel):
@@ -286,18 +360,85 @@ class IntentResult(BaseModel):
     所以不能用 TripMeta（必填 city 和 days）。用 dict 接收，
     由 field_validator 做确定性校验。
     """
-    intent: Literal["trip_planning", "unsupported"] = Field(default="trip_planning")
+    intent: Literal["trip_planning", "weather_query", "conversation", "unsupported", "current_trip_question", "current_trip_modify", "conversation_context_question"] = Field(default="trip_planning")
     trip_meta: Optional[dict] = None
     missing_fields: List[str] = Field(default=[])
     invalid_fields: List[str] = Field(default=[])
     assumptions: List[str] = Field(default=[])
+    # 性能优化：意图识别同一次调用直接产出小渡语气的追问，
+    # orchestrator 在缺失字段一致时直接使用，省一次 LLM 往返
+    clarification_question: Optional[str] = Field(default=None)
+    # 问候、能力咨询或非旅行闲聊由意图模型同轮生成自然回复，避免固定兜底话术。
+    chat_reply: Optional[str] = Field(default=None)
 
 
 class RetrievedSource(BaseModel):
-    """RAG 检索来源（第二期用，第一期留空）"""
+    """统一可解释来源：用户 Memory、目的地 RAG 或小红书笔记。"""
+    type: Literal["user_memory", "destination_rag", "xhs_notes"]
+    id: str
+    title: str = ""
+    content: str = ""
+    score: float = 0.0
+    reason: str = ""
+    source: Optional[str] = None
+    city: Optional[str] = None
+    category: Optional[str] = None
+
+
+class RouteOption(BaseModel):
+    """攻略选线候选。"""
+    id: str
     title: str
-    score: float
-    source: str
+    route_text: str = ""
+    suitable_for: str = ""
+    poi_hints: List[str] = Field(default_factory=list)
+    food_hints: List[str] = Field(default_factory=list)
+    tips: List[str] = Field(default_factory=list)
+
+
+class GuideRoutesResponse(BaseModel):
+    """攻略选线响应（非流式兜底/guide_done data）。"""
+    status: Literal["ok", "failed"]
+    session_id: Optional[str] = None
+    guide_markdown: str = ""
+    route_options: List[RouteOption] = Field(default_factory=list)
+    sources: List[RetrievedSource] = Field(default_factory=list)
+    # 统一对话入口的下一步：选线、自然对话、回顾或修改现有行程。
+    action: Literal["route_options", "conversation", "current_trip_question", "current_trip_modify", "weather_query", "clarification"] = "route_options"
+    assistant_message: Optional[str] = None
+    trip_meta: Optional[Dict[str, Any]] = None
+    itinerary_updated: bool = False
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class PlanFromRouteRequest(BaseModel):
+    """用户确认攻略路线后的落地规划请求。"""
+    query: str = Field(..., min_length=1, max_length=2000, description="原始用户自然语言 query")
+    selected_route: RouteOption
+    session_id: Optional[str] = Field(default=None, description="会话 ID")
+    user_id: Optional[str] = Field(default="default_user", description="用户 ID")
+    # 阶段 A 已确认的事实，阶段 B 直接复用，避免再做一次 LLM 意图识别。
+    trip_meta: Optional[Dict[str, Any]] = None
+
+
+class TripContextRequest(BaseModel):
+    """针对当前已生成行程的追问，不触发新一轮规划。"""
+    query: str = Field(..., min_length=1, max_length=2000)
+    user_id: Optional[str] = Field(default="default_user", description="用户 ID")
+
+
+class TripContextResponse(BaseModel):
+    session_id: str
+    message: str
+
+
+class UserContext(BaseModel):
+    """按 user_id 聚合的用户画像与历史上下文。"""
+    user_id: str
+    profile: Dict[str, Any] = Field(default_factory=dict)
+    memories: List[Dict[str, Any]] = Field(default_factory=list)
+    sources: List[RetrievedSource] = Field(default_factory=list)
 
 
 class NlTripPlanResponse(BaseModel):
@@ -311,6 +452,29 @@ class NlTripPlanResponse(BaseModel):
     invalid_fields: List[str] = Field(default=[])
     assumptions: List[str] = Field(default=[])
     sources: List[RetrievedSource] = Field(default=[])
+    user_context: Optional[UserContext] = None
+    warnings: List[str] = Field(default=[])
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    hotel_candidates: List[Dict[str, Any]] = Field(default_factory=list, description="高德搜索到的酒店候选（5 个，含名称/评分/星级/区域）")
+
+
+# ─── 行程自然语言修订 Schema ─────────────────────────────────────────────────
+
+class ReviseNlRequest(BaseModel):
+    """自然语言行程修订请求"""
+    query: str = Field(..., min_length=1, max_length=2000, description="用户自然语言修订 query")
+    day: Optional[int] = Field(default=None, ge=1, description="目标天（None 表示通用修订）")
+    user_id: Optional[str] = Field(default="default_user", description="用户 ID")
+
+
+class ReviseNlResponse(BaseModel):
+    """自然语言行程修订响应"""
+    status: Literal["ok", "needs_clarification", "needs_confirmation", "failed"]
+    session_id: str
+    message: str = Field(default="", description="AI 助手回复给用户的消息")
+    itinerary_version: int = Field(default=1, description="修订后行程版本号")
+    clarification_question: Optional[str] = Field(default=None, description="需要澄清时的问题")
     warnings: List[str] = Field(default=[])
     error_code: Optional[str] = None
     error_message: Optional[str] = None

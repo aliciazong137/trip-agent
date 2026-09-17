@@ -136,12 +136,14 @@ def check_constraints(itinerary: dict, poi_list: dict, trip_meta: dict) -> Dict[
             errors.append(f"必去项 {must_id} 未在行程中出现")
 
     # 预算超限（warning）
+    # amount=None（LLM null 占位）时 .get 默认值不生效，统一按 0 处理
     budget = trip_meta.get("budget")
-    if budget:
+    budget_amount = (budget.get("amount") or 0) if isinstance(budget, dict) else 0
+    if budget_amount > 0:
         total_cost = sum(d.get("estimated_total_cost", 0) for d in itinerary.get("days", []))
-        if total_cost > budget.get("amount", 0):
+        if total_cost > budget_amount:
             warnings.append(
-                f"行程总成本 {total_cost} 超过预算 {budget.get('amount')}（{budget.get('currency')}）"
+                f"行程总成本 {total_cost} 超过预算 {budget_amount}（{budget.get('currency')}）"
             )
 
     return {"errors": errors, "warnings": warnings}

@@ -26,8 +26,49 @@ from app.services.clarification_store import (
     clear_pending_clarification,
     merge_query_for_clarification,
 )
-from app.agents.intent_recognizer import _extract_json_from_response
+from app.agents.intent_recognizer import _extract_json_from_response, enforce_intent_contract
 from app.models.schemas import IntentResult, TripMeta
+
+
+class TestIntentContract:
+    """模型开放判断后的结构化安全边界，不依赖关键词重分类。"""
+
+    def test_current_trip_intent_requires_an_active_session(self):
+        result = enforce_intent_contract(IntentResult(intent="current_trip_modify"), has_active_session=False)
+        assert result.intent == "conversation"
+        assert result.chat_reply
+
+    def test_current_trip_intent_is_preserved_with_an_active_session(self):
+        result = enforce_intent_contract(IntentResult(intent="current_trip_question"), has_active_session=True)
+        assert result.intent == "current_trip_question"
+
+    def test_conversation_always_has_a_displayable_reply(self):
+        result = enforce_intent_contract(IntentResult(intent="conversation"), has_active_session=False)
+        assert result.chat_reply
+
+    def test_chat_recall_requires_a_conversation_summary(self):
+        result = enforce_intent_contract(
+            IntentResult(intent="conversation_context_question"),
+            has_active_session=False,
+            has_conversation_context=False,
+        )
+        assert result.intent == "conversation"
+
+    def test_chat_recall_is_preserved_with_a_conversation_summary(self):
+        result = enforce_intent_contract(
+            IntentResult(intent="conversation_context_question"),
+            has_active_session=False,
+            has_conversation_context=True,
+        )
+        assert result.intent == "conversation_context_question"
+
+    def test_planning_result_is_not_reclassified(self):
+        result = enforce_intent_contract(
+            IntentResult(intent="trip_planning", trip_meta={"city": "南京", "days": 2}),
+            has_active_session=False,
+        )
+        assert result.intent == "trip_planning"
+        assert result.trip_meta == {"city": "南京", "days": 2}
 
 
 # ─── 测试夹具 ───────────────────────────────────────────────────────────────
@@ -158,6 +199,23 @@ class TestValidateTripMeta:
         raw = {"city": "北京", "days": 2, "budget": {"amount": -100}}
         tm, _, invalid = validate_trip_meta(raw)
         assert "budget" in invalid
+
+    def test_budget_amount_null_is_dropped(self):
+        """LLM 输出 {"amount": null} 占位 → 视为未提供预算，不进 invalid 也不崩排程"""
+        raw = {"city": "北京", "days": 2, "budget": {"amount": None, "currency": "CNY"}}
+        tm, missing, invalid = validate_trip_meta(raw)
+        assert "budget" not in invalid
+        assert tm is not None
+        assert tm.budget is None or (tm.budget or {}).get("amount") is None
+        # 排程器不再会遇到 amount=None 崩溃（scheduler.py 378 回归）
+        from app.core.scheduler import build_itinerary_from_data
+        import asyncio
+        pois = [{"id": "p1", "name": "故宫", "area": "东城区", "priority": "nice",
+                 "estimated_duration_minutes": 120, "estimated_cost": 60,
+                 "location": {"longitude": 116.4, "latitude": 39.9}}]
+        trip_meta_dict = {"city": "北京", "days": 1, "budget": {"amount": None}}
+        result = asyncio.run(build_itinerary_from_data("sess_x", trip_meta_dict, {"city": "北京", "pois": pois}))
+        assert result["itinerary"]["days"]
 
     def test_pace_invalid_normalizes_alias(self):
         """pace 口语别名归一化：fast → packed，不再判 invalid"""
@@ -370,7 +428,7 @@ class TestOrchestratorFlow:
 
     @pytest.mark.asyncio
     async def test_unsupported_intent(self):
-        """非旅行规划请求 → failed + UNSUPPORTED_INTENT"""
+        """非旅行规划请求 → 友好澄清，不再返回错误"""
         from app.agents.trip_orchestrator import TripPlanOrchestrator
         from app.models.schemas import IntentResult
 
@@ -381,10 +439,14 @@ class TestOrchestratorFlow:
             trip_meta=None,
             assumptions=[],
         ))
+        orch._call_llm_for_revise = AsyncMock(
+            return_value="我主要负责旅行规划，想去哪里玩呢？"
+        )
 
         resp = await orch.plan_from_nl("帮我写邮件", session_id=None)
-        assert resp.status == "failed"
-        assert resp.error_code == "UNSUPPORTED_INTENT"
+        assert resp.status == "needs_clarification"
+        assert resp.error_code is None
+        assert "旅行" in resp.clarification_question
 
     @pytest.mark.asyncio
     async def test_full_flow_calls_planner(self):
@@ -448,6 +510,67 @@ class TestOrchestratorFlow:
         assert "我想去玩几天" in called_query
         assert "去南京，2天" in called_query
         assert resp.status == "ok"
+
+    @pytest.mark.asyncio
+    async def test_multi_turn_clarification_accumulates_preferences(self):
+        """上海 → 美食打卡 → 3天：每轮补充必须累积，偏好不能被覆盖。"""
+        from app.agents.trip_orchestrator import TripPlanOrchestrator
+        from app.models.schemas import IntentResult
+
+        orch = TripPlanOrchestrator()
+        orch.intent_recognizer = MagicMock()
+        orch.intent_recognizer.recognize = AsyncMock(side_effect=[
+            IntentResult(
+                intent="trip_planning",
+                trip_meta={"city": "上海", "pace": "normal"},
+                missing_fields=["days"],
+            ),
+            IntentResult(
+                intent="trip_planning",
+                trip_meta={"city": "上海", "preferences": "美食打卡", "pace": "normal"},
+                missing_fields=["days"],
+            ),
+            IntentResult(
+                intent="trip_planning",
+                trip_meta={
+                    "city": "上海",
+                    "days": 3,
+                    "preferences": "美食打卡",
+                    "pace": "normal",
+                    "transportation": "公共交通",
+                },
+            ),
+        ])
+        orch._planner = MagicMock()
+        orch._planner.plan_trip = AsyncMock(return_value={
+            "session_id": "sess_f6a1b2c3d4e5",
+            "trip_plan": {},
+            "warnings": [],
+        })
+
+        first = await orch.plan_from_nl("我想去上海", session_id=None)
+        assert first.status == "needs_clarification"
+        assert first.session_id is not None
+
+        second = await orch.plan_from_nl("我偏好美食打卡", session_id=first.session_id)
+        assert second.status == "needs_clarification"
+        assert "days" in second.missing_fields
+
+        pending = await load_pending_clarification(first.session_id)
+        assert pending is not None
+        assert "我想去上海" in pending["original_query"]
+        assert "我偏好美食打卡" in pending["original_query"]
+
+        third = await orch.plan_from_nl("3天", session_id=first.session_id)
+        assert third.status == "ok"
+        final_query = orch.intent_recognizer.recognize.call_args_list[2].args[0]
+        assert "我想去上海" in final_query
+        assert "我偏好美食打卡" in final_query
+        assert "3天" in final_query
+        planned_meta = orch._planner.plan_trip.call_args.args[0]
+        assert planned_meta["city"] == "上海"
+        assert planned_meta["days"] == 3
+        assert planned_meta["preferences"] == "美食打卡"
 
     @pytest.mark.asyncio
     async def test_invalid_session_id_treated_as_new(self):
@@ -611,3 +734,33 @@ class TestOrchestratorTransportationClarificationClosable:
         resp2 = await orch2.plan_from_nl("公共交通", session_id=sid, user_id="u_sz2")
         assert resp2.status == "ok", f"续接答交通方式后应进 planner，实际 {resp2.status}"
         orch2._planner.plan_trip.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_user_context_isolated_and_source_traceable():
+    from unittest.mock import MagicMock
+    from app.agents.trip_orchestrator import TripPlanOrchestrator
+    from app.memory.base import MemoryItem, MemorySearchResult
+
+    orch = TripPlanOrchestrator()
+    orch.memory.search = MagicMock(return_value=[MemorySearchResult(
+        item=MemoryItem(
+            user_id="user_a", memory_type="semantic", content="用户画像：home_city=北京",
+            metadata={"event_type": "profile", "profile_key": "home_city", "profile_value": "北京"},
+        ),
+        score=0.9,
+    )])
+    ctx = orch._build_user_context("user_a", "大阪旅行")
+    assert ctx.user_id == "user_a"
+    assert ctx.profile["home_city"] == "北京"
+    assert len(ctx.sources) == 1
+    assert ctx.sources[0].type == "user_memory"
+    assert ctx.sources[0].id == ctx.memories[0]["id"]
+    orch.memory.search.assert_called_once_with("user_a", "大阪旅行", limit=8)
+
+
+def test_clarification_with_known_city_has_warm_opening():
+    question = build_clarification_question(["days"], [], {"city": "北京"})
+    assert question.startswith("北京很值得慢慢逛")
+    assert "几天" in question
+    assert "为了帮您生成准确" not in question

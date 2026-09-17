@@ -33,6 +33,14 @@ class Settings:
     app_host: str = os.getenv("APP_HOST", "0.0.0.0")
     app_port: int = int(os.getenv("APP_PORT", "8000"))
     debug: bool = os.getenv("DEBUG", "true").lower() == "true"
+    anonymous_auth_secret: str = os.getenv("ANONYMOUS_AUTH_SECRET", "trip-agent-local-development-secret-change-me")
+    # 匿名试用额度：白名单用户由服务器环境变量配置，绝不信任前端声明。
+    admin_user_ids: set[str] = {item.strip() for item in os.getenv("ADMIN_USER_IDS", "").split(",") if item.strip()}
+    quota_full_guides_per_day: int = int(os.getenv("QUOTA_FULL_GUIDES_PER_DAY", "3"))
+    quota_inspiration_guides_per_day: int = int(os.getenv("QUOTA_INSPIRATION_GUIDES_PER_DAY", "5"))
+    quota_plans_per_day: int = int(os.getenv("QUOTA_PLANS_PER_DAY", "3"))
+    quota_revisions_per_day: int = int(os.getenv("QUOTA_REVISIONS_PER_DAY", "5"))
+    quota_storage_path: str = os.getenv("QUOTA_STORAGE_PATH", "data/usage/anonymous_quotas.json")
 
     # context 目录（session 文件存储）
     context_root: str = os.getenv("CONTEXT_ROOT", "context")
