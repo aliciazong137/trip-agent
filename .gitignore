@@ -41,3 +41,6 @@ Spider_XHS/
 amap-skills/
 project.ui
 *.tsbuildinfo
+
+# 服务器部署环境变量
+backend/.env

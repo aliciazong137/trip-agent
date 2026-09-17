@@ -1,6 +1,7 @@
 import type { GuideRoutesResponse, MapData, NlTripPlanResponse, ReviseNlResponse, RouteOption, TrendingNotesResponse } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+// 开发环境直连本地后端；生产环境由 Nginx 同源代理 /api，避免暴露后端端口与 CORS 问题。
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 
 /** 所有业务请求都携带 HttpOnly 匿名身份 Cookie，前端不保存也不传递 user_id。 */
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
