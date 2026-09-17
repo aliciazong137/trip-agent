@@ -72,7 +72,7 @@ def search_notes(query: str, limit: int) -> dict[str, Any]:
 
 
 @app.get("/health")
-def health() -> dict[str, bool]:
+def health() -> dict[str, Any]:
     return {"status": "ok", "has_cookie": COOKIE_FILE.exists() and bool(COOKIE_FILE.read_text().strip())}
 
 
