@@ -9,7 +9,9 @@ FROM python:3.12-slim AS backend
 WORKDIR /app/backend
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# 服务器无 GPU；先固定 CPU 版 PyTorch，避免解析到数 GB 的 CUDA 依赖。
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
+    && pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./
 COPY data/ /app/data/
 EXPOSE 8000
