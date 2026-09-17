@@ -6,7 +6,10 @@ H4 阶段：接入真实 TripPlannerAgent
 import asyncio
 import logging
 from typing import Optional
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import Response as RawResponse
 
 from app.models.schemas import (
     TripPlanRequest,
@@ -108,7 +111,7 @@ def _conversation_context_message(context: str) -> str:
 async def get_trending_travel_notes(http_request: Request, personalized: bool = False) -> dict:
     """读取每日 18:00 缓存的小红书热门旅游笔记。"""
     from app.services.trending_notes import get_trending_notes
-    payload = get_trending_notes()
+    payload = _trending_payload_with_local_covers(get_trending_notes())
     if not personalized:
         return payload
     cities = await session_store.list_recent_cities(_authenticated_user_id(http_request))
@@ -118,6 +121,51 @@ async def get_trending_travel_notes(http_request: Request, personalized: bool = 
     position = {city: index for index, city in enumerate(cities)}
     notes.sort(key=lambda note: min((position.get(tag, len(cities)) for tag in note.get("tags", [])), default=len(cities)))
     return {**payload, "notes": notes}
+
+
+def _trending_payload_with_local_covers(payload: dict) -> dict:
+    """浏览器只加载本站图片地址，避免 CDN 外链被防盗链或 HTTPS 策略拦截。"""
+    notes = []
+    for source in payload.get("notes") or []:
+        note = dict(source)
+        if note.get("cover_url") and note.get("id"):
+            note["cover_url"] = f"/api/discover/trending/{note['id']}/cover"
+        notes.append(note)
+    return {**payload, "notes": notes}
+
+
+@discover_router.get("/trending/{note_id}/cover")
+async def get_trending_note_cover(note_id: str) -> RawResponse:
+    """代理已缓存热门笔记的封面；不接受任意 URL，避免形成开放代理。"""
+    from app.services.trending_notes import get_trending_notes
+
+    note = next(
+        (item for item in get_trending_notes().get("notes", []) if str(item.get("id")) == note_id),
+        None,
+    )
+    source_url = str((note or {}).get("cover_url") or "")
+    parsed = urlparse(source_url)
+    if not source_url or parsed.scheme not in {"http", "https"} or not (parsed.hostname or "").endswith("xhscdn.com"):
+        raise HTTPException(status_code=404, detail="封面不存在")
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            upstream = await client.get(source_url, headers={"User-Agent": "Mozilla/5.0"})
+        content_type = upstream.headers.get("content-type", "")
+        if upstream.status_code != 200 or not content_type.startswith("image/") or len(upstream.content) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=502, detail="封面暂时不可用")
+        return RawResponse(
+            content=upstream.content,
+            media_type=content_type.split(";", 1)[0],
+            headers={"Cache-Control": "public, max-age=21600"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("热门笔记封面代理失败 note=%s: %s", note_id, exc)
+        raise HTTPException(status_code=502, detail="封面暂时不可用") from exc
 
 # 单例 TripPlannerAgent（LLM 连接复用）
 _planner: TripPlannerAgent | None = None
