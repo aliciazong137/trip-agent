@@ -35,7 +35,7 @@ def enforce_intent_contract(
     模型仍负责开放式理解。这里仅阻止不可能的状态进入工作流：没有当前
     Session 时不能“修改当前行程”；自然对话必须有可展示的回复。
     """
-    if result.intent in {"current_trip_question", "current_trip_modify"} and not has_active_session:
+    if result.intent in {"current_trip_question", "current_trip_modify", "current_trip_replan"} and not has_active_session:
         logger.warning("意图模型返回 %s 但当前不存在 Session，降级为自然对话", result.intent)
         return IntentResult(
             intent="conversation",
@@ -67,6 +67,9 @@ INTENT_RECOGNIZER_PROMPT = """你是旅行需求解析助手。从用户 query �
    - 若下方提供了“当前已生成行程”，用户在问这份行程的内容、总结或解释（如“还记得上面的行程吗”“第一天去哪”）→ intent="current_trip_question"。
    - 若下方提供了“当前聊天摘要”，用户在问上面的对话、攻略或路线方案（如“你还记得上面的内容吗”“刚才那三个方案是什么”）→ intent="conversation_context_question"。这不是新规划，也不是泛泛闲聊。
    - 若下方提供了“当前已生成行程”，用户要新增、替换、删除、调整该行程中的地点或顺序（如“把目的地改成国子监”“第一天加故宫”）→ intent="current_trip_modify"。
+   - **优先识别重新攻略**：用户评价已生成的路线/行程不满意、都不喜欢、想换一版、重做攻略、重新推荐时 → intent="current_trip_replan"，不是 current_trip_question，也不是 current_trip_modify。
+   - 若下方提供“正在等待重新攻略偏好”，用户补充主题、节奏、必去或避开内容（如“喜欢历史人文”“想轻松一点”“不要胡同”“必须去故宫”）→ intent="current_trip_replan"，并把本句明确出现的偏好放进 trip_meta。此时不能再追问“是替换还是加入”；系统会沿用已有城市、天数等事实重新生成路线方案。
+   - current_trip_modify 只用于明确、可执行的原子修改，如“删掉北海公园”“第一天加故宫”“把目的地换成国子监”。
    - 没有当前已生成行程时，不能输出 current_trip_question 或 current_trip_modify。
    - 不要因为信息不全就把 trip_planning 判成 unsupported
 
@@ -125,8 +128,10 @@ travelers、preferences、budget、transportation 等都是可选字段，未提
 - 对"你能做什么"等能力咨询，简洁介绍旅行规划、路线比较、行程回顾和调整。
 - 对非旅行请求，先自然回应，再诚实说明旅行是主要能力；不要使用固定模板，也不要强行把话题带去做攻略。
 - intent="trip_planning" 或 intent="weather_query" 时 chat_reply=null。
-- intent="current_trip_question" 或 intent="current_trip_modify" 时 trip_meta=null、chat_reply=null。
-- intent="conversation_context_question" 时 trip_meta=null、chat_reply=null。
+- intent="current_trip_question" 时 trip_meta=null，必须用 chat_reply 根据当前行程自然回答用户问题；不能固定复读行程摘要。
+- intent="conversation_context_question" 时 trip_meta=null，必须用 chat_reply 根据当前聊天摘要自然回答；不能固定复读聊天摘要。
+- intent="current_trip_modify" 时 trip_meta=null、chat_reply=null。
+- intent="current_trip_replan" 时可从本句抽取部分 trip_meta；若本句尚未给出主题、节奏、必去或避开信息，chat_reply 用一句话一次性询问这些方向。
 
 **输出 JSON 格式（严格按此结构）：**
 ```json
@@ -163,7 +168,7 @@ travelers、preferences、budget、transportation 等都是可选字段，未提
 - query 完全不像旅行规划时，intent="unsupported"
 - **intent="weather_query" 时，trip_meta 中只填 city（若提到），其余为空**
 - **intent="conversation" 时，trip_meta 设为 null，chat_reply 填自然回复**
-- **intent="current_trip_question" / "current_trip_modify" 只会在提供当前行程时使用，trip_meta 设为 null**
+- **intent="current_trip_question" / "current_trip_modify" / "current_trip_replan" 只会在提供当前行程时使用**
 - **intent="conversation_context_question" 只会在提供当前聊天摘要时使用，trip_meta 设为 null**
 - **信息不全但像旅行规划 → intent="trip_planning"，缺的字段放 missing_fields**
   - 正例："想去玩几天" → intent="trip_planning", missing_fields=["city", "days"]

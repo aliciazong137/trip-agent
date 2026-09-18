@@ -360,7 +360,7 @@ class IntentResult(BaseModel):
     所以不能用 TripMeta（必填 city 和 days）。用 dict 接收，
     由 field_validator 做确定性校验。
     """
-    intent: Literal["trip_planning", "weather_query", "conversation", "unsupported", "current_trip_question", "current_trip_modify", "conversation_context_question"] = Field(default="trip_planning")
+    intent: Literal["trip_planning", "weather_query", "conversation", "unsupported", "current_trip_question", "current_trip_modify", "current_trip_replan", "conversation_context_question"] = Field(default="trip_planning")
     trip_meta: Optional[dict] = None
     missing_fields: List[str] = Field(default=[])
     invalid_fields: List[str] = Field(default=[])

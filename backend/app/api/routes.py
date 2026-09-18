@@ -107,6 +107,20 @@ def _conversation_context_message(context: str) -> str:
     return "记得。刚才我们聊到：\n" + "\n".join(lines[-6:])
 
 
+def _replan_has_direction(meta: dict) -> bool:
+    """用户给出这些方向后即可重新生成候选路线，无需再追问已有事实。"""
+    return any(bool(meta.get(key)) for key in ("preferences", "must_visit", "avoid", "pace", "transportation", "budget"))
+
+
+def _merge_replan_meta(existing: dict, update: dict) -> dict:
+    """保留已确认旅行事实，只让用户本轮明确表达覆盖对应字段。"""
+    merged = dict(existing or {})
+    for key, value in (update or {}).items():
+        if value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
+
+
 @discover_router.get("/trending")
 async def get_trending_travel_notes(http_request: Request, personalized: bool = False) -> dict:
     """读取每日 18:00 缓存的小红书热门旅游笔记。"""
@@ -346,6 +360,9 @@ async def create_guide_routes_stream(request: NlTripPlanRequest, http_request: R
                     loaded_session = None
                 if loaded_session:
                     session_context = "当前已生成行程（仅用于判断是否在问或修改它，不可补全新规划事实）：\n" + _trip_context_message(loaded_session)
+                    replan_draft = (loaded_session.get("session") or {}).get("replan_draft")
+                    if replan_draft:
+                        session_context += "\n正在等待重新攻略偏好：用户已否定上一版方案；下一句若提供主题、节奏、必去或避开内容，应直接重新生成路线方案。"
             conversation_context = (request.conversation_context or "").strip()
             context_parts = [part for part in [session_context, ("当前聊天摘要（仅用于回顾这轮对话，不可补全新规划事实）：\n" + conversation_context) if conversation_context else ""] if part]
             # 热门推荐是一个明确的产品动作：用户点了“查看路线方案”，不应再把
@@ -362,15 +379,30 @@ async def create_guide_routes_stream(request: NlTripPlanRequest, http_request: R
             if intent and intent.intent == "conversation_context_question" and conversation_context:
                 await q.put({"type": "guide_done", "data": GuideRoutesResponse(
                     status="ok", session_id=request.session_id, action="conversation",
-                    assistant_message=_conversation_context_message(conversation_context),
+                    assistant_message=intent.chat_reply or _conversation_context_message(conversation_context),
                 ).model_dump(mode="json")})
                 return
             if intent and intent.intent == "current_trip_question" and loaded_session:
                 await q.put({"type": "guide_done", "data": GuideRoutesResponse(
                     status="ok", session_id=request.session_id, action="current_trip_question",
-                    assistant_message="当然记得。" + _trip_context_message(loaded_session),
+                    assistant_message=intent.chat_reply or ("当然记得。" + _trip_context_message(loaded_session)),
                 ).model_dump(mode="json")})
                 return
+            if intent and intent.intent == "current_trip_replan" and loaded_session:
+                replan_update = dict(intent.trip_meta or {})
+                if not _replan_has_direction(replan_update):
+                    await session_store.save_replan_draft(request.session_id, {"status": "awaiting_preferences"})
+                    await q.put({"type": "guide_done", "data": GuideRoutesResponse(
+                        status="ok", session_id=request.session_id, action="conversation",
+                        assistant_message=intent.chat_reply or (
+                            "明白，这版没有贴合你的期待。你一次告诉我更喜欢的主题、节奏，"
+                            "以及必去或不想去的地方，我会保留已确认的出行信息重新给你出 3 条路线。"
+                        ),
+                    ).model_dump(mode="json")})
+                    return
+                trip_meta_dict = _merge_replan_meta(loaded_session.get("trip_meta") or {}, replan_update)
+                await session_store.save_replan_draft(request.session_id, None)
+                logger.info("重新攻略: session=%s city=%s days=%s", request.session_id, trip_meta_dict.get("city"), trip_meta_dict.get("days"))
             if intent and intent.intent == "current_trip_modify" and loaded_session:
                 revision = await orch.revise_from_nl(
                     request.session_id, request.query, user_id=user_id

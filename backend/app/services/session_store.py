@@ -319,6 +319,25 @@ async def update_session_phase(session_id: str, phase: str, signal: Optional[asy
         return None
 
 
+async def save_replan_draft(session_id: str, draft: Optional[dict]) -> Optional[dict]:
+    """保存重新攻略的短期上下文，不覆盖已落地的行程事实。"""
+    assert_valid_session_id(session_id)
+    session_dir = _session_dir(session_id)
+    try:
+        async with aiofiles.open(session_dir / "session.json", encoding="utf-8") as f:
+            session = json.loads(await f.read())
+    except FileNotFoundError:
+        return None
+    if draft:
+        session["replan_draft"] = draft
+    else:
+        session.pop("replan_draft", None)
+    from datetime import datetime, timezone
+    session["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _atomic_write(session_dir / "session.json", json.dumps(session, ensure_ascii=False, indent=2))
+    return session
+
+
 async def touch_session(session_id: str) -> str:
     """更新 session.updatedAt"""
     assert_valid_session_id(session_id)

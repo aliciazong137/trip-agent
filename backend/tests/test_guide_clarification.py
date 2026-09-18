@@ -75,6 +75,64 @@ def test_current_trip_question_uses_session_without_generating_new_routes():
     planner.generate_guide_routes.assert_not_awaited()
 
 
+def test_current_trip_question_prefers_contextual_model_reply():
+    intent = IntentResult(intent="current_trip_question", chat_reply="第 1 天先逛鼓楼，下午去北海公园。")
+    planner = SimpleNamespace(generate_guide_routes=AsyncMock())
+    orch = SimpleNamespace(intent_recognizer=SimpleNamespace(recognize=AsyncMock(return_value=intent)))
+    loaded = {
+        "trip_meta": {"city": "北京", "days": 1},
+        "poi_list": {"pois": [{"id": "p1", "name": "鼓楼"}]},
+        "itinerary": {"days": [{"day": 1, "time_blocks": [{"poi_id": "p1"}]}]},
+    }
+    with patch("app.api.routes._get_orchestrator", return_value=orch), patch("app.api.routes._get_planner", return_value=planner), patch("app.api.routes.session_store.load_session", new=AsyncMock(return_value=loaded)):
+        response = TestClient(app).post("/api/trip/guide-routes/stream", json={"query": "第一天去哪？", "session_id": "session_123"})
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    result = next(event["data"] for event in events if event["type"] == "guide_done")
+    assert result["assistant_message"] == "第 1 天先逛鼓楼，下午去北海公园。"
+    planner.generate_guide_routes.assert_not_awaited()
+
+
+def test_replan_feedback_asks_once_and_does_not_generate_routes():
+    intent = IntentResult(intent="current_trip_replan")
+    planner = SimpleNamespace(generate_guide_routes=AsyncMock())
+    orch = SimpleNamespace(intent_recognizer=SimpleNamespace(recognize=AsyncMock(return_value=intent)))
+    loaded = {
+        "session": {"user_id": "default_user"},
+        "trip_meta": {"city": "北京", "days": 1, "preferences": "亲子", "transportation": "公共交通", "budget": {"amount": 3000}},
+        "poi_list": {"pois": []}, "itinerary": {"days": []},
+    }
+    with patch("app.api.routes._get_orchestrator", return_value=orch), patch("app.api.routes._get_planner", return_value=planner), patch("app.api.routes.session_store.load_session", new=AsyncMock(return_value=loaded)), patch("app.api.routes.session_store.save_replan_draft", new=AsyncMock()) as save_draft:
+        response = TestClient(app).post("/api/trip/guide-routes/stream", json={"query": "这版我都不喜欢，再攻略一下", "session_id": "session_123"})
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    result = next(event["data"] for event in events if event["type"] == "guide_done")
+    assert result["action"] == "conversation"
+    assert "主题" in result["assistant_message"]
+    save_draft.assert_awaited_once_with("session_123", {"status": "awaiting_preferences"})
+    planner.generate_guide_routes.assert_not_awaited()
+
+
+def test_replan_preference_reuses_existing_trip_facts_and_generates_routes():
+    intent = IntentResult(intent="current_trip_replan", trip_meta={"preferences": "历史文化"})
+    planner = SimpleNamespace(generate_guide_routes=AsyncMock(return_value={"status": "ok", "guide_markdown": "新的三条路线", "route_options": []}))
+    orch = SimpleNamespace(intent_recognizer=SimpleNamespace(recognize=AsyncMock(return_value=intent)))
+    loaded = {
+        "session": {"user_id": "default_user", "replan_draft": {"status": "awaiting_preferences"}},
+        "trip_meta": {"city": "北京", "days": 1, "preferences": "亲子", "transportation": "公共交通", "budget": {"amount": 3000}},
+        "poi_list": {"pois": []}, "itinerary": {"days": []},
+    }
+    with patch("app.api.routes._get_orchestrator", return_value=orch), patch("app.api.routes._get_planner", return_value=planner), patch("app.api.routes.session_store.load_session", new=AsyncMock(return_value=loaded)), patch("app.api.routes.session_store.save_replan_draft", new=AsyncMock()) as save_draft, patch("app.services.quota_service.consume", return_value=SimpleNamespace(allowed=True)):
+        response = TestClient(app).post("/api/trip/guide-routes/stream", json={"query": "喜欢历史人文，例如故宫、天坛", "session_id": "session_123"})
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    result = next(event["data"] for event in events if event["type"] == "guide_done")
+    assert result["action"] == "route_options"
+    meta = planner.generate_guide_routes.await_args.args[0]
+    assert meta["city"] == "北京"
+    assert meta["days"] == 1
+    assert meta["transportation"] == "公共交通"
+    assert meta["preferences"] == "历史文化"
+    save_draft.assert_awaited_once_with("session_123", None)
+
+
 def test_other_users_session_is_not_used_as_current_trip_context():
     intent = IntentResult(intent="current_trip_question")
     planner = SimpleNamespace(generate_guide_routes=AsyncMock())

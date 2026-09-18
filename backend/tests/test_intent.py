@@ -42,6 +42,10 @@ class TestIntentContract:
         result = enforce_intent_contract(IntentResult(intent="current_trip_question"), has_active_session=True)
         assert result.intent == "current_trip_question"
 
+    def test_replan_intent_requires_an_active_session(self):
+        result = enforce_intent_contract(IntentResult(intent="current_trip_replan"), has_active_session=False)
+        assert result.intent == "conversation"
+
     def test_conversation_always_has_a_displayable_reply(self):
         result = enforce_intent_contract(IntentResult(intent="conversation"), has_active_session=False)
         assert result.chat_reply
