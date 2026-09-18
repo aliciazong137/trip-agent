@@ -14,6 +14,7 @@ python-dotenv>=1.0.0
 # HTTP 客户端（调 MCP / Unsplash）
 httpx>=0.27.0
 aiofiles>=24.1.0
+fastmcp>=2.0.0
 
 # 测试
 pytest>=8.0.0
